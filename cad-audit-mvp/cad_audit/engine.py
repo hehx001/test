@@ -37,7 +37,8 @@ def inspect_dxf(path: str):
     unit_code = int(doc.header.get("$INSUNITS", 0))
     all_types = {}
     blocks = {"references": 0, "virtual_entities": 0, "empty_references": 0,
-              "unexpanded_references": 0, "examples": []}
+              "unexpanded_references": 0, "skipped_entities": 0,
+              "minsert_instances": 0, "examples": []}
 
     def visible_entities(layout):
         # Never explode() a design file: virtual_entities() retains the source.
@@ -50,22 +51,52 @@ def inspect_dxf(path: str):
             if depth >= 8 or blocks["virtual_entities"] >= 15000:
                 blocks["unexpanded_references"] += 1
                 if len(blocks["examples"]) < 8:
-                    blocks["examples"].append({"entity": path, "reason": "depth or entity cap"})
+                    blocks["examples"].append({"entity": path, "reason": "depth_or_entity_cap"})
                 return
+            if ent.mcount > 1:
+                try:
+                    for idx, instance in enumerate(ent.multi_insert()):
+                        blocks["minsert_instances"] += 1
+                        if blocks["minsert_instances"] > 15000:
+                            raise ValueError("multi_insert_cap")
+                        yield from visit(instance, path + f"@{idx}", depth + 1)
+                except Exception as exc:
+                    blocks["unexpanded_references"] += 1
+                    if len(blocks["examples"]) < 8:
+                        blocks["examples"].append({"entity": path, "reason": type(exc).__name__})
+                return
+
+            def skipped(source_entity, reason):
+                blocks["skipped_entities"] += 1
+                blocks["unexpanded_references"] += 1
+                kind = source_entity.dxftype()
+                source_handle = str(source_entity.dxf.get("handle", ""))
+                if len(blocks["examples"]) < 8:
+                    blocks["examples"].append({"entity": path, "source_handle": source_handle,
+                                               "kind": kind, "reason": str(reason)[:200]})
+                if kind == "CIRCLE":
+                    radius = float(source_entity.dxf.get("radius", 0))
+                    if radius <= 0:
+                        findings.append(issue("DXF-003", "图块中的圆半径非正数",
+                                              "warning", "confirmed", layout.name,
+                                              path + "/" + source_handle,
+                                              {"radius": radius, "note": str(reason)[:120]},
+                                              "检查源图块内异常圆及图块变换。"))
             try:
                 children_seen = False
-                for index, child in enumerate(ent.virtual_entities()):
+                before_skips = blocks["skipped_entities"]
+                for index, child in enumerate(
+                    ent.virtual_entities(skipped_entity_callback=skipped)
+                ):
                     children_seen = True
                     if blocks["virtual_entities"] >= 15000:
                         blocks["unexpanded_references"] += 1
                         if len(blocks["examples"]) < 8:
-                            blocks["examples"].append({"entity": path, "reason": "entity cap"})
+                            blocks["examples"].append({"entity": path, "reason": "entity_cap"})
                         break
                     blocks["virtual_entities"] += 1
                     yield from visit(child, path + "/" + str(index), depth + 1)
-                if not children_seen:
-                    # Some archived DXF drawings intentionally reference
-                    # empty blocks. These are valid and need no geometry.
+                if not children_seen and blocks["skipped_entities"] == before_skips:
                     block_name = str(ent.dxf.get("name", ""))
                     definition = doc.blocks.get(block_name)
                     if definition is not None and not any(True for _ in definition):
@@ -73,8 +104,8 @@ def inspect_dxf(path: str):
                     else:
                         blocks["unexpanded_references"] += 1
                         if len(blocks["examples"]) < 8:
-                            blocks["examples"].append({"entity": path,
-                                                       "reason": "missing or unsupported block"})
+                            blocks["examples"].append({
+                                "entity": path, "reason": "missing_or_unsupported_block"})
             except Exception as exc:
                 blocks["unexpanded_references"] += 1
                 if len(blocks["examples"]) < 8:
@@ -149,6 +180,10 @@ def inspect_dxf(path: str):
             findings.append(issue("DOC-001", "图框属性存在多个不同取值", "warning", "needs_review", "TITLE", key,
                                   {"field": key, "values": values}, "核对是否包含多个图框或多个版本。"))
     return {"filename": Path(path).name, "attributes": attrs, "units": units,
+            "inspection_scope": {"dimension_text": "partial",
+                "dimension_geometry_association": "not_supported",
+                "drawn_geometry": ("partial" if blocks["unexpanded_references"] else "checked_supported_types"),
+                "preview": "illustrative_only"},
             "entity_counts": counts, "dimension_text_stats": dim_stats,
             "all_entity_types": all_types, "block_expansion": blocks,
             "unrendered_entity_types": {k: v for k, v in all_types.items()
