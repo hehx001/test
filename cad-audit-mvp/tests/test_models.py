@@ -77,7 +77,7 @@ def test_two_providers_route_independently(monkeypatch, provider, key_name, mode
             provider + "_local_fake_secret", model_name, host
         )
     ))
-    assert result["status"] == "ok"
+    assert result["status"] == "partial"
     assert result["provider"] == provider and result["model"] == model_name
     assert len(result["checks"]) == 1
     assert result["omitted_unmatched"] == 1
