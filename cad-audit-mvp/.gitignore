@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+*.egg-info/
+*.step
+*.stp
+*.dxf
+*.dwg
+*.csv
+!.gitkeep
+.env
+.env.*
+!.env.example

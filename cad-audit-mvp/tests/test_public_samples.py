@@ -1,0 +1,252 @@
+"""Reproducible integration tests using independently authored public CAD files.
+
+Files are downloaded on demand, at immutable revisions, and checked against their
+original Git blob SHA. They are not redistributed by this repository.
+Run: pytest -s -q tests/test_public_samples.py
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+import ezdxf
+import pytest
+
+from cad_audit.engine import inspect_dxf, inspect_step
+
+
+SAMPLES = {
+    "mounting_plate": (
+        "haiha-ux/cad-sample-tests",
+        "150f4dce05a41a85d956189de8ded2cdd0d4a4d3",
+        "bai_a/CST-A-001_mounting_plate.dxf",
+        "f2e34c19c3503ac98febf2d2dfffe2711dab8bae",
+    ),
+    "step_bearing": (
+        "haiha-ux/cad-sample-tests",
+        "150f4dce05a41a85d956189de8ded2cdd0d4a4d3",
+        "bai_c/CST-C-001_step_bearing.dxf",
+        "17f14f8ab370fd5b9913bf7a22409866a360675a",
+    ),
+    "cadquery_dxf": (
+        "CadQuery/cadquery",
+        "477d87d738c57f46e8e073d2b958ee0a32d29258",
+        "tests/testdata/genshi.dxf",
+        "9662e95ec1e9a4d178073d0953a5d96919188df5",
+    ),
+    "cadquery_step": (
+        "CadQuery/cadquery",
+        "477d87d738c57f46e8e073d2b958ee0a32d29258",
+        "tests/testdata/red_cube_blue_cylinder.step",
+        "4ed12421d740787953eeee57e717d7f553473ed6",
+    ),
+    "freecad_step": (
+        "FreeCAD/FreeCAD",
+        "5ce3b8804dd91cacbcc9e740d14b55e062536f3b",
+        "data/tests/Step/as1-ac-214_small.stp",
+        "85b358f640a9dd7f4c1d4f18e0a9ab87c6c1fafa",
+    ),
+    "nist_hole_dxf": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/Purdue/Sanjeev_Trika/hole/hole.dxf",
+        "622e2417adfb9106695ff849badb0fe0d29e5ec3",
+    ),
+    "nist_step_dxf": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/Purdue/Sanjeev_Trika/step/step.dxf",
+        "766a32244631775aad54b910eaf9bd40e916c1b3",
+    ),
+    "nist_gear_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/VDS/gear/gear.stp",
+        "dcd4e983bec3e422ffd874b5cbbb657dee271fbc",
+    ),
+    "nist_disc_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/VDS/disc/disc.stp",
+        "e4a4690b7473e6e18e6d96d09b08b747df9d1e1f",
+    ),
+    "nist_bracket_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/STEP/STI/bracket1-Part/bracket1-Part.stp",
+        "02841d39d7683e40bbd049e102c9c7c4e3d39411",
+    ),
+    "nist_piston_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/STEP/STI/piston/piston.stp",
+        "761c7f4af53c3f9e0ea00d246889d4002d1063eb",
+    ),
+}
+
+
+def download_sample(key: str, folder: Path) -> Path:
+    repo, revision, src, expected_blob_sha = SAMPLES[key]
+    url = f"https://raw.githubusercontent.com/{repo}/{revision}/{src}"
+    req = Request(url, headers={"User-Agent": "Mechanical-CAD-Audit-Test/0.1"})
+    with urlopen(req, timeout=45) as response:
+        payload = response.read(1_000_001)
+    assert len(payload) <= 1_000_000, f"oversize sample: {key}"
+    git_blob = hashlib.sha1(b"blob " + str(len(payload)).encode("ascii") +
+                            b"\0" + payload).hexdigest()
+    assert git_blob == expected_blob_sha, f"source changed or invalid: {key}"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / Path(src).name
+    path.write_bytes(payload)
+    return path
+
+
+def result_record(key, path, result):
+    details = {
+        "id": key,
+        "source": SAMPLES[key][0] + "/" + SAMPLES[key][2],
+        "source_revision": SAMPLES[key][1],
+        "git_blob_sha": SAMPLES[key][3],
+        "file_bytes": path.stat().st_size,
+        "rule_counts": {},
+        "status_counts": {},
+        "issues": [],
+    }
+    if "entity_counts" in result:
+        details["entity_counts"] = result["entity_counts"]
+        details["declared_units"] = result["units"]
+        details["dimension_text_stats"] = result["dimension_text_stats"]
+        details["all_entity_types"] = result["all_entity_types"]
+        details["unrendered_entity_types"] = result["unrendered_entity_types"]
+        details["block_expansion"] = result["block_expansion"]
+    if "part_count" in result:
+        details["part_count"] = result["part_count"]
+        details["candidate_pairs"] = result["candidate_pairs"]
+    for problem in result["findings"]:
+        rule = problem["rule"]
+        status = problem["status"]
+        details["rule_counts"][rule] = details["rule_counts"].get(rule, 0) + 1
+        details["status_counts"][status] = details["status_counts"].get(status, 0) + 1
+        details["issues"].append({
+            "rule": rule, "status": status,
+            "entity": problem["entity"], "title": problem["title"]
+        })
+    return details
+
+
+@pytest.fixture(scope="module")
+def public_data(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("public_cad")
+    return {name: download_sample(name, folder) for name in SAMPLES}
+
+
+def test_authentic_technical_drawings(public_data):
+    expected_dimension_counts = {"mounting_plate": 15, "step_bearing": 22}
+    for key in ("mounting_plate", "step_bearing", "cadquery_dxf"):
+        path = public_data[key]
+        doc = ezdxf.readfile(path)
+        audit = doc.audit()
+        assert not audit.errors, f"DXF audit error for {key}: {audit.errors}"
+        result = inspect_dxf(str(path))
+        assert result["filename"] == path.name
+        if key in expected_dimension_counts:
+            assert result["entity_counts"]["DIMENSION"] == expected_dimension_counts[key]
+            assert result["dimension_text_stats"]["numeric_conflicts"] == 0
+        if key == "mounting_plate":
+            assert not any(x["rule"] == "DXF-001" for x in result["findings"])
+        if key == "step_bearing":
+            assert result["dimension_text_stats"]["numeric_matches"] >= 21
+            assert result["dimension_text_stats"]["custom_unverified"] <= 1
+        if key == "cadquery_dxf":
+            assert result["all_entity_types"].get("SPLINE") == 12
+            assert result["unrendered_entity_types"].get("SPLINE") == 12
+        print("REAL_DXF " + json.dumps(result_record(key, path, result), ensure_ascii=False))
+
+
+def test_authentic_step_files(public_data):
+    for key in ("cadquery_step", "freecad_step"):
+        path = public_data[key]
+        result = inspect_step(str(path))
+        assert result["part_count"] >= 1, f"no STEP parts: {key}"
+        print("REAL_STEP " + json.dumps(result_record(key, path, result), ensure_ascii=False))
+
+
+def test_controlled_dimension_mutation_on_authentic_drawing(public_data, tmp_path):
+    """Change one authentic dimension label, then check its original entity handle."""
+    src = public_data["mounting_plate"]
+    doc = ezdxf.readfile(src)
+    target = next(iter(doc.modelspace().query("DIMENSION")))
+    handle = target.dxf.handle
+    target.dxf.text = "9999.99"
+    changed = tmp_path / "changed_mounting_plate.dxf"
+    doc.saveas(changed)
+    findings = inspect_dxf(str(changed))["findings"]
+    matches = [x for x in findings if x["rule"] == "DXF-001" and x["entity"] == handle]
+    assert matches and matches[0]["evidence"]["shown"] == "9999.99"
+    print("MUTATION " + json.dumps({
+        "source": str(src.name), "altered_entity": handle,
+        "rule_detected": matches[0]["rule"], "status": matches[0]["status"]
+    }, ensure_ascii=False))
+
+
+def test_nist_historical_dxf_files(public_data):
+    """Independent NIST CAD archive: report actual parse coverage."""
+    for key in ("nist_hole_dxf", "nist_step_dxf"):
+        path = public_data[key]
+        doc = ezdxf.readfile(path)
+        audit = doc.audit()
+        assert not audit.errors, f"NIST DXF validation errors for {key}: {audit.errors}"
+        result = inspect_dxf(str(path))
+        assert result["all_entity_types"], f"empty DXF model: {key}"
+        assert result["block_expansion"]["references"] >= 8, key
+        assert result["entity_counts"]["LINE"] >= 40, key
+        assert result["block_expansion"]["unexpanded_references"] == 0, key
+        assert result["preview"], f"no expanded NIST block geometry: {key}"
+        print("NIST_DXF " + json.dumps(result_record(key, path, result), ensure_ascii=False))
+
+
+def test_nist_historical_step_files(public_data):
+    """Read native NIST STEP models without pretending their designs are certified."""
+    for key in ("nist_gear_step", "nist_disc_step", "nist_bracket_step", "nist_piston_step"):
+        path = public_data[key]
+        result = inspect_step(str(path))
+        assert result["part_count"] >= 1, f"NIST model has no readable solids: {key}"
+        print("NIST_STEP " + json.dumps(result_record(key, path, result), ensure_ascii=False))
+
+
+@pytest.mark.parametrize("overlap_expected", [True, False], ids=["known-overlap", "known-separation"])
+def test_nist_bracket_controlled_assembly(public_data, tmp_path, overlap_expected):
+    """Create an intentional collision from an authentic NIST mechanical solid.
+
+    A second copy is placed at exactly the same location (positive example)
+    or sufficiently far away (negative example). This does not imply the
+    original NIST model contained a manufacturing design error.
+    """
+    import cadquery as cq
+    solid = cq.importers.importStep(str(public_data["nist_bracket_step"])).val()
+    assert solid.Volume() > 0, "NIST bracket did not import as a solid"
+    bbox = solid.BoundingBox()
+    offset = 0 if overlap_expected else bbox.xlen + bbox.ylen + bbox.zlen + 100
+    assembly = cq.Assembly(name="controlled")
+    assembly.add(solid, name="reference")
+    assembly.add(solid, name="second", loc=cq.Location(cq.Vector(offset, 0, 0)))
+    output = tmp_path / ("nist_overlap.step" if overlap_expected else "nist_separated.step")
+    assembly.save(str(output))
+    results = inspect_step(str(output))
+    overlaps = [x for x in results["findings"] if x["rule"] == "STEP-001"]
+    assert results["part_count"] == 2
+    if overlap_expected:
+        assert overlaps, "failed to detect known overlap in authentic NIST geometry"
+        assert overlaps[0]["evidence"]["overlap_volume_model_units_cubed"] > 0
+    else:
+        assert not overlaps, "false interference warning for separated NIST solids"
+    print("NIST_CONTROLLED " + json.dumps({
+        "source": "nist_bracket_step",
+        "case": "known_overlap" if overlap_expected else "known_separation",
+        "part_count": results["part_count"],
+        "candidate_pairs": results["candidate_pairs"],
+        "interference_count": len(overlaps),
+        "overlap_volumes": [x["evidence"]["overlap_volume_model_units_cubed"] for x in overlaps],
+    }, ensure_ascii=False))

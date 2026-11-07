@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>机械CAD智能审核｜工程试验版</title>
+<style>
+:root{color-scheme:light;--ink:#202c35;--muted:#62717b;--line:#dce3e7;--bg:#f4f6f7;--surface:#fff;--navy:#183a4c;--blue:#2e6b81;--warm:#b86b22}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink)}
+header{background:#17394b;color:white;padding:28px max(24px,calc((100vw - 1240px)/2));border-bottom:5px solid #6f9ba5}
+header h1{font-size:25px;letter-spacing:.5px;margin:0 0 7px}header p{margin:0;color:#cae1e7;font-size:13px}
+main{max-width:1240px;margin:26px auto;padding:0 22px;display:grid;grid-template-columns:340px minmax(0,1fr);gap:20px;align-items:start}
+.panel{border:1px solid var(--line);border-radius:13px;background:var(--surface);box-shadow:0 2px 10px #1b35400a;overflow:hidden}
+.panel h2{font-size:16px;margin:0;padding:18px 19px;border-bottom:1px solid var(--line)}.pad{padding:19px}.hint{font-size:12px;line-height:1.7;color:var(--muted)}
+.file{display:block;margin:16px 0}.file label{display:block;font-weight:650;font-size:13px;margin-bottom:8px}.file input,.file select{width:100%;font-size:12px;color:var(--muted)}.file select{padding:10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}.ai-check{border:1px solid #e2e8ea;border-radius:8px;padding:10px;margin:10px 0}.ai-check strong{display:block;margin-bottom:5px;font-size:12px}.ai-check p{font-size:12px;margin:5px 0;line-height:1.65}
+button{border:0;border-radius:9px;padding:11px 15px;background:var(--navy);font-weight:600;font-size:13px;color:white;cursor:pointer}button:hover{background:var(--blue)}button:disabled{opacity:.6;cursor:wait}button.secondary{background:#e7eef0;color:var(--ink)}
+pre{font-size:12px;white-space:pre-wrap;word-break:break-all;background:#f1f4f4;border-radius:8px;padding:10px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+.stat{background:#f1f5f5;border:1px solid #e3ecee;border-radius:9px;text-align:center;padding:13px 7px}.stat strong{display:block;font-size:24px;color:#16465c}.stat span{font-size:11px;color:var(--muted)}
+.right{display:grid;gap:18px}.empty{font-size:13px;color:var(--muted);padding:65px 20px;text-align:center}.results{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px}
+#preview{height:310px;display:flex;align-items:center;justify-content:center;background:#f7f9f9;border:1px solid #e3eaec;border-radius:9px;overflow:hidden}svg{width:100%;height:100%}
+.finding{border:1px solid #e2e8ea;border-radius:9px;margin:0 0 11px;overflow:hidden}.finding button{display:block;width:100%;background:#fff;color:var(--ink);border-radius:0;text-align:left;padding:13px}.finding button:hover{background:#eff5f5}
+.finding.active{border-color:#3d7b90;box-shadow:0 0 0 1px #3d7b90}.f-title{font-size:13px;font-weight:650}.meta{font-size:11px;color:var(--muted);margin-top:5px}
+.flag{display:inline-block;padding:2px 7px;border-radius:5px;background:#fff0db;color:#925d27;font-size:10px;margin-left:6px}.flag.confirmed{background:#e9eef1;color:#435b66}
+#details{font-size:12px;line-height:1.8;min-height:70px}.section-title{font-size:13px;font-weight:700;margin-bottom:12px}.top{display:flex;justify-content:space-between;align-items:center;gap:10px}.note{font-size:11px;color:var(--muted)}
+@media(max-width:1050px){.results{grid-template-columns:1fr}}@media(max-width:770px){main{grid-template-columns:1fr;margin:10px auto}header{padding:25px}}
+</style>
+</head>
+<body>
+<header><h1>机械CAD智能审核</h1><p>工程试验版 0.1 · 原生几何检查 · 可核实的审查证据 · 原始文件只读</p></header>
+<main>
+<aside class="panel"><h2>审核任务</h2><div class="pad">
+  <p class="hint">选择文件后执行检查。二维图纸为 DXF，物料清单为 CSV，三维装配体为 STEP。文件仅用于当前任务，服务器处理完成后删除临时副本。</p>
+  <form id="form">
+    <div class="file"><label for="dxf">二维机械图纸 (.dxf)</label><input id="dxf" name="dxf" type="file" accept=".dxf" /></div>
+    <div class="file"><label for="step">三维装配模型 (.step / .stp)</label><input id="step" name="step" type="file" accept=".step,.stp" /></div>
+    <div class="file"><label for="bom">物料清单 (.csv)</label><input id="bom" name="bom" type="file" accept=".csv" /></div>
+    <div class="file"><label for="provider">模型服务（可选）</label>
+      <select id="provider" name="provider">
+        <option value="off">不调用模型（只用工程规则）</option>
+        <option value="qwen">Qwen｜通义千问</option>
+        <option value="deepseek">DeepSeek</option>
+      </select>
+    </div>
+    <p class="hint" id="provider-status">正在检查服务端模型配置…</p>
+    <p class="hint">只有主动选择云端模型时，才向所选服务商发送工程规则摘要和关联证据；CAD原文件仍由本机程序处理。</p>
+    <button id="run" type="submit" style="width:100%">执行工程检查</button>
+  </form>
+  <p id="message" class="hint" aria-live="polite"></p>
+  <hr style="border:0;border-top:1px solid var(--line);margin:20px 0">
+  <div class="section-title">当前支持的检查</div>
+  <p class="hint">尺寸数值复核、零长度图元、图框属性冲突、BOM编号及材料一致性、STEP静态实体重叠。</p>
+  <p class="hint">本工具不会确认机械设计的整体安全性。实体重叠可能属于预期过盈，人工审核结论仍需设计工程师审定。</p>
+</div></aside>
+<section class="right">
+  <div class="panel"><div class="pad"><div class="top"><div class="section-title">审核概况</div><button class="secondary" id="download" disabled>下载JSON报告</button></div>
+    <div class="stats"><div class="stat"><strong id="total">—</strong><span>发现事项</span></div><div class="stat"><strong id="confirmed">—</strong><span>可确定的异常</span></div><div class="stat"><strong id="review">—</strong><span>待工程师复核</span></div></div>
+    <div class="note" id="coverage">尚未执行检查。</div>
+  </div></div>
+  <div class="panel"><h2>模型辅助解释</h2><div class="pad" id="ai-result"><p class="hint">尚未执行模型审核。</p></div></div>
+  <div class="panel"><h2>审核工作台</h2><div class="pad" id="workspace"><div class="empty">上传图纸或模型，审核结果将在这里显示。</div></div></div>
+</section>
+</main>
+<script>
+const form=document.getElementById('form'),message=document.getElementById('message');let report=null;
+fetch('/api/model-providers').then(r=>r.json()).then(data=>{
+ const entries=(data.providers||[]).map(p=>p.label+'（'+p.model+'）：'+(p.configured?'已配置':'未配置密钥'));
+ document.getElementById('provider-status').textContent=entries.join('；')||'没有获取到可用模型配置。';
+}).catch(()=>{document.getElementById('provider-status').textContent='无法读取模型配置；本地规则审核仍可使用。'});
+const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n};
+form.addEventListener('submit',async ev=>{
+ ev.preventDefault();const fd=new FormData();['dxf','step','bom'].forEach(k=>{const f=document.getElementById(k).files[0];if(f)fd.append(k,f)});
+ if(![...fd.keys()].length){message.textContent='请先选择文件。';return}
+ fd.set('provider',document.getElementById('provider').value);
+ const btn=document.getElementById('run');btn.disabled=true;message.textContent='正在解析并计算…';
+ try{const res=await fetch('/api/review',{method:'POST',body:fd});const data=await res.json();if(!res.ok)throw new Error(data.detail||'审核失败');report=data;document.getElementById('download').disabled=false;
+ try{render(data);message.textContent='检查完成。'}
+ catch(drawError){message.textContent='工程检查已完成；图纸预览无法呈现，仍可下载JSON报告。';
+ console.warn('CAD preview failed:',drawError)}}
+ catch(err){message.textContent='检查失败：'+err.message}finally{btn.disabled=false}
+});
+document.getElementById('download').addEventListener('click',()=>{
+ if(!report)return;const blob=new Blob([JSON.stringify(report,null,2)],{type:'application/json;charset=utf-8'});const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download='机械CAD智能审核报告.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),2000)
+});
+function renderAI(result){
+ const root=document.getElementById('ai-result');root.replaceChildren();
+ if(result.status==='disabled'){root.append(el('p','未选择模型；本次只运行工程规则。','hint'));return}
+ if(result.status==='error'){root.append(el('p','模型调用未完成：'+(result.message||'未知错误')+'。CAD规则审核结果仍然有效。','hint'));return}
+ if(result.status==='skipped'){root.append(el('p',result.message||'没有可供解释的规则疑点。','hint'));return}
+ if(result.status==='invalid'){root.append(el('p',result.summary||'模型解释未通过引用检查，工程规则结果仍保留。','hint'));
+ if(result.coverage)root.append(el('p','模型有效解释0项，拒收 '+(result.omitted_unmatched||0)+' 项。','hint'));return}
+ if(result.status!=='ok'&&result.status!=='partial'){root.append(el('p','没有可用的模型审核结果。','hint'));return}
+ root.append(el('div',result.provider+' · '+result.model+' · '+(result.status==='partial'?'部分有效':'有效'),'note'));
+ if(result.coverage)root.append(el('p','规则疑点 '+result.coverage.total+' 项，送审 '+result.coverage.sent+
+ ' 项，有效解释 '+result.coverage.accepted+' 项，未送审 '+result.coverage.excluded+
+ ' 项，拒收 '+(result.omitted_unmatched||0)+' 项。','hint'));
+ root.append(el('p',result.summary||'模型未提供概述。','hint'));
+ for(const item of result.checks||[]){
+  const area=el('div',undefined,'ai-check');
+  area.append(el('strong',item.rule+' · '+item.entity));
+  area.append(el('p',item.analysis));
+  area.append(el('p','建议核查：'+item.action));
+  root.append(area);
+ }
+ if(result.scope_note)root.append(el('p','未覆盖范围：'+result.scope_note,'hint'));
+ root.append(el('p','模型解释只作为复核线索，不替代机械设计工程师的技术判断。','hint'));
+}
+function render(data){
+ ['total','confirmed','review'].forEach((k,i)=>document.getElementById(k).textContent=[data.summary.findings,data.summary.confirmed,data.summary.needs_review][i]);
+ renderAI(data.ai_review||{status:'disabled'});
+ const rs=data.results;
+ const pair=rs.step?.pair_counts;
+ const status=data.summary;
+ document.getElementById('coverage').textContent='已处理：'+status.formats.join('、')+
+ (pair?' | STEP候选配对 '+rs.step.candidate_pairs+'，计算成功 '+pair.calculated+
+ '，失败 '+pair.failed+'，未支持 '+pair.not_supported+'，包围盒排除 '+pair.bbox_excluded:'')+
+ (status.failed||status.not_supported?' | 未完成事项：'+(status.failed+status.not_supported):'')+
+ (rs.dxf?.preview_stats?.simplified?' | 二维预览已抽稀，不影响工程记录':'');
+ const root=document.getElementById('workspace');root.replaceChildren();const wrap=el('div',undefined,'results');const left=el('div'),right=el('div');
+ left.append(el('div','二维图纸简化预览（点击下方问题可标记相关图元）','section-title'));const svgBox=el('div',undefined);svgBox.id='preview';left.append(svgBox);
+ const dd=el('p','预览仅显示部分基础图元，不能代替CAD软件中的原图。','hint');left.append(dd);
+ left.append(el('div','当前问题证据','section-title'));const details=el('div','选择右侧问题查看原始数据。');details.id='details';left.append(details);
+ right.append(el('div','检查发现','section-title'));
+ if(!data.findings.length)right.append(el('p','本次已执行的规则未发现异常。其他审核项目未被本原型覆盖。','hint'));
+ for(const [index,f] of data.findings.entries()){
+  const item=el('div',undefined,'finding');const b=el('button');const statusLabel={confirmed:'已发现',needs_review:'待复核',failed:'计算失败',not_supported:'未支持'};
+  const badge=el('span',statusLabel[f.status]||'待核实','flag '+(f.status==='confirmed'?'confirmed':''));
+  b.append(el('div',`${index+1}. ${f.title}`,'f-title'),badge,el('div',`${f.rule} · ${f.source} · ${f.entity}`,'meta'));
+  b.addEventListener('click',()=>{for(const o of right.querySelectorAll('.finding'))o.classList.remove('active');item.classList.add('active');details.replaceChildren(el('div','检查依据：'),el('pre',JSON.stringify(f.evidence,null,2)),el('div','审核建议：'+f.advice));draw(svgBox,rs.dxf?.preview||[],f.entity)});
+  item.append(b);right.append(item);
+ }
+ wrap.append(left,right);root.append(wrap);draw(svgBox,rs.dxf?.preview||[],null);
+}
+function draw(root,objects,active){
+ root.replaceChildren();if(!objects.length){root.append(el('div','没有可预览的基础二维几何','hint'));return}
+ let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+ function ext(p){const x=Number(p[0]),y=Number(p[1]);if(!Number.isFinite(x)||!Number.isFinite(y))return;
+ if(x<xmin)xmin=x;if(x>xmax)xmax=x;if(y<ymin)ymin=y;if(y>ymax)ymax=y}
+ for(const o of objects){if(o.type==='LINE'){ext(o.a);ext(o.b)}
+ if(o.type==='POLYLINE'){for(const p of o.pts)ext(p)}
+ if(o.type==='POINT')ext(o.xy);
+ if(o.type==='CIRCLE'){ext([o.c[0]-o.r,o.c[1]-o.r]);ext([o.c[0]+o.r,o.c[1]+o.r])}}
+ if(!Number.isFinite(xmin))return;
+ const w=700,h=360,scale=Math.min((w-48)/(xmax-xmin||1),(h-48)/(ymax-ymin||1)),px=x=>24+(x-xmin)*scale,py=y=>h-24-(y-ymin)*scale;
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${w} ${h}`);svg.setAttribute('role','img');svg.setAttribute('aria-label','图纸基础轮廓示意');
+ for(const o of objects){const hit=o.id===active;let tag='';let attrs={};if(o.type==='LINE'){tag='line';attrs={x1:px(o.a[0]),y1:py(o.a[1]),x2:px(o.b[0]),y2:py(o.b[1])}}
+ if(o.type==='POLYLINE'){tag='polyline';const points=o.pts.concat(o.closed?[o.pts[0]]:[]);attrs={points:points.map(p=>`${px(p[0])},${py(p[1])}`).join(' '),fill:'none'}}
+ if(o.type==='CIRCLE'){tag='circle';attrs={cx:px(o.c[0]),cy:py(o.c[1]),r:o.r*scale,fill:'none'}}
+ if(o.type==='POINT'){tag='circle';attrs={cx:px(o.xy[0]),cy:py(o.xy[1]),r:hit?6:2}}
+ if(!tag)continue;const node=document.createElementNS('http://www.w3.org/2000/svg',tag);Object.entries({...attrs,stroke:hit?'#dc672e':'#557886','stroke-width':hit?3:1.4}).forEach(([k,v])=>node.setAttribute(k,String(v)));svg.append(node)
+ }root.append(svg);
+}
+</script>
+</body></html>
