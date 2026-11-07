@@ -81,6 +81,7 @@ def result_record(key, path, result):
     if "entity_counts" in result:
         details["entity_counts"] = result["entity_counts"]
         details["declared_units"] = result["units"]
+        details["dimension_text_stats"] = result["dimension_text_stats"]
     if "part_count" in result:
         details["part_count"] = result["part_count"]
         details["candidate_pairs"] = result["candidate_pairs"]

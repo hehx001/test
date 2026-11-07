@@ -37,6 +37,33 @@ def extract_attributes(document):
     return {key: sorted(values) for key, values in found.items()}
 
 
+_DIM_VALUE_PATTERN = re.compile(
+    r'^\s*(?:R|Ø|⌀|Φ|%%[cC])?\s*'
+    r'(?P<value>\d+-\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)'
+    r'\s*(?:"|in|mm)?\s*R?\s*$', re.IGNORECASE
+)
+
+
+def _parse_dimension_number(label: str):
+    """Parse a conservative subset of numeric dimension overrides.
+
+    Supports decimal, common fractions, mixed fractions, diameter/radius
+    markers, and inch/mm suffixes. Returns None for compound notes/callouts.
+    """
+    m = _DIM_VALUE_PATTERN.fullmatch(label.strip())
+    if not m:
+        return None
+    x = m.group("value")
+    if "-" in x and "/" in x:
+        whole, fraction = x.split("-", 1)
+        a, b = fraction.split("/", 1)
+        return float(whole) + float(a) / float(b) if float(b) else None
+    if "/" in x:
+        a, b = x.split("/", 1)
+        return float(a) / float(b) if float(b) else None
+    return float(x)
+
+
 def inspect_dxf(path: str):
     import ezdxf
     from ezdxf import DXFError
@@ -46,6 +73,9 @@ def inspect_dxf(path: str):
     except (OSError, DXFError, ValueError) as exc:
         raise ValueError("DXF文件无法正确解析") from exc
     findings, drawing, counts = [], [], {"DIMENSION": 0, "LINE": 0, "CIRCLE": 0}
+    dim_stats = {"default_or_placeholder": 0, "numeric_matches": 0,
+                 "numeric_conflicts": 0, "custom_unverified": 0}
+    custom_samples = []
     for layout in doc.layouts:
         for ent in layout:
             kind = ent.dxftype()
@@ -54,16 +84,35 @@ def inspect_dxf(path: str):
                 counts[kind] += 1
             if kind == "DIMENSION":
                 shown = str(ent.dxf.get("text", "") or "").strip()
-                if shown and shown not in ("<>", " "):
+                if not shown or "<>" in shown:
+                    dim_stats["default_or_placeholder"] += 1
+                else:
+                    displayed = _parse_dimension_number(shown)
+                    raw = None
                     try:
-                        measurement = ent.get_measurement()
-                        measured = round(float(measurement), 6) if isinstance(measurement, (float, int)) else str(measurement)
+                        m = ent.get_measurement()
+                        if isinstance(m, (int, float)) and math.isfinite(float(m)):
+                            raw = float(m)
                     except (ValueError, TypeError, ArithmeticError):
-                        measured = "unavailable"
-                    findings.append(issue("DXF-001", "尺寸显示文字经过人工指定", "warning", "needs_review",
-                                          layout.name, handle, {"shown": shown, "raw_measurement": measured,
-                                          "note": "原始测量值尚未计入全部尺寸样式、比例与公差规则"},
-                                          "核查该标注是否符合设计意图，不可直接认定为尺寸错误。"))
+                        pass
+                    # Without explicit source dimensions/angle semantics and
+                    # DIMLFAC style interpretation, a numeric discrepancy
+                    # must be reviewed, not automatically condemned.
+                    if displayed is not None and raw is not None:
+                        if abs(displayed - raw) <= max(1e-4, abs(raw) * 1e-4):
+                            dim_stats["numeric_matches"] += 1
+                        else:
+                            dim_stats["numeric_conflicts"] += 1
+                            findings.append(issue("DXF-001", "尺寸文字与原始几何测量值不一致",
+                                                  "warning", "needs_review", layout.name, handle,
+                                                  {"shown": shown, "parsed_value": displayed,
+                                                   "raw_measurement": round(raw, 6),
+                                                   "note": "需再核查DIMLFAC、单位换算、标注类型与特殊公差要求"},
+                                                  "核查原始几何、尺寸样式和人工修改原因。"))
+                    else:
+                        dim_stats["custom_unverified"] += 1
+                        if len(custom_samples) < 5:
+                            custom_samples.append({"entity": handle, "shown": shown})
                 p = ent.dxf.get("defpoint", None)
                 if p is not None:
                     drawing.append({"type": "POINT", "id": handle, "xy": [float(p.x), float(p.y)]})
@@ -88,6 +137,10 @@ def inspect_dxf(path: str):
                 if len(pts) > 1:
                     drawing.append({"type": "POLYLINE", "id": handle, "pts": pts,
                                     "closed": bool(ent.closed), "has_bulge": any(abs(p[4]) > 1e-10 for p in ent.get_points("xyseb"))})
+    if dim_stats["custom_unverified"]:
+        findings.append(issue("DXF-005", "部分特殊尺寸注释未完成数值校核", "info", "needs_review",
+                              "DRAWING", "DIMENSION", {"count": dim_stats["custom_unverified"],
+                              "samples": custom_samples}, "特殊尺寸文本需结合原始设计要求复核。"))
     units = int(doc.header.get("$INSUNITS", 0))
     if units == 0:
         findings.append(issue("DXF-004", "文件未声明插入单位", "info", "needs_review", "HEADER", "$INSUNITS",
@@ -98,7 +151,8 @@ def inspect_dxf(path: str):
             findings.append(issue("DOC-001", "图框属性存在多个不同取值", "warning", "needs_review", "TITLE", key,
                                   {"field": key, "values": values}, "核对是否包含多个图框或多个版本。"))
     return {"filename": Path(path).name, "attributes": attrs, "units": units,
-            "entity_counts": counts, "preview": drawing, "findings": findings}
+            "entity_counts": counts, "dimension_text_stats": dim_stats,
+            "preview": drawing, "findings": findings}
 
 
 def inspect_bom(raw: bytes, drawing_attrs: dict):
