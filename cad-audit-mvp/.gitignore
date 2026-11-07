@@ -9,3 +9,6 @@ __pycache__/
 *.dwg
 *.csv
 !.gitkeep
+.env
+.env.*
+!.env.example

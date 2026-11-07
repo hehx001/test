@@ -2,9 +2,11 @@
 import os
 import tempfile
 from pathlib import Path
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from .engine import inspect_dxf, inspect_bom, inspect_step
+from .models import (ModelConfigurationError, ModelServiceError,
+                     generate_ai_review, public_provider_status)
 
 app = FastAPI(title="机械CAD智能审核原型", version="0.1.0", docs_url="/api/docs")
 ROOT = Path(__file__).parent
@@ -26,10 +28,18 @@ async def bounded(file, extensions):
     return data, suffix
 
 
+@app.get("/api/model-providers")
+def model_providers():
+    return {"default": "off", "providers": public_provider_status()}
+
+
 @app.post("/api/review")
 async def review(dxf: UploadFile | None = File(None),
                  step: UploadFile | None = File(None),
-                 bom: UploadFile | None = File(None)):
+                 bom: UploadFile | None = File(None),
+                 provider: str = Form("off")):
+    if provider not in ("off", "qwen", "deepseek"):
+        raise HTTPException(422, "请选择有效的模型服务商")
     if not dxf and not step and not bom:
         raise HTTPException(400, "至少上传一个文件")
     report = {"title": "机械CAD智能审核报告（原型）", "results": {}, "findings": []}
@@ -68,4 +78,15 @@ async def review(dxf: UploadFile | None = File(None),
                          "confirmed": sum(p["status"] == "confirmed" for p in report["findings"]),
                          "needs_review": sum(p["status"] == "needs_review" for p in report["findings"]),
                          "formats": list(report["results"])}
+    # Cloud calls are explicit. Original CAD files remain local: only a
+    # bounded summary of the engineering checks is sent to the chosen API.
+    report["ai_review"] = {"status": "disabled", "message": "仅执行本地工程规则检查"}
+    if provider != "off":
+        try:
+            report["ai_review"] = await generate_ai_review(report, provider)
+        except (ModelConfigurationError, ModelServiceError) as exc:
+            report["ai_review"] = {
+                "status": "error", "provider": provider,
+                "message": str(exc),
+            }
     return report
