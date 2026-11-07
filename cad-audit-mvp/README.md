@@ -47,6 +47,24 @@ python -m pytest -q tests/test_models.py
 **目前没有获得用户密钥，尚未运行两家真实付费API请求。** 双接口的请求构造、服务商切换、规则证据筛选、异常处理和密钥不泄漏行为采用模拟HTTPS响应测试。生产使用前需要在实际开通的服务地域，用真实API Key进行一次端到端验证。
 
 
+## 在Mac上安全配置模型密钥
+
+请先到Qwen和DeepSeek官方控制台撤销已在聊天中发送的旧密钥，再生成两把新密钥。不要把新密钥发到聊天窗口、GitHub、源码或终端命令参数中。
+
+先在本机项目目录 `cad-audit-mvp` 安装依赖，运行交互式配置工具：
+
+```bash
+python -m pip install -e .
+python scripts/configure_api_keys.py
+python scripts/check_model_connection.py
+```
+
+配置工具使用隐藏式终端交互，创建本机 `.env` 文件（权限600），Git 已忽略该文件。服务启动时自动读取 `.env`；已有环境变量优先。`check_model_connection.py` 会分别使用已配置的官方API执行一个模拟工程疑点的真实请求，因此会产生少量API费用。不会显示密钥。
+
+Qwen的密钥需要与实际地域和计费计划对应；北京公共服务默认使用 `https://dashscope.aliyuncs.com/compatible-mode/v1`。跨地域工作空间、Token Plan或Coding Plan请按阿里云控制台说明修改 `.env` 中的 `QWEN_BASE_URL`。目前服务器只允许已登记的官方HTTPS地址。DeepSeek默认使用 `https://api.deepseek.com`。
+
+以上是**本地部署配置**，不能通过GitHub仓库自动设置正在使用的Mac上的环境变量。没有用户重新生成的新密钥，无法完成两家收费API的正式连通性验证。
+
 ## 快速启动
 
 建议Python 3.11—3.13，安装所需依赖（首次安装Open CASCADE包可能较大）：
