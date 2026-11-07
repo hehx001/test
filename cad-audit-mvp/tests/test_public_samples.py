@@ -48,6 +48,42 @@ SAMPLES = {
         "data/tests/Step/as1-ac-214_small.stp",
         "85b358f640a9dd7f4c1d4f18e0a9ab87c6c1fafa",
     ),
+    "nist_hole_dxf": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/Purdue/Sanjeev_Trika/hole/hole.dxf",
+        "622e2417adfb9106695ff849badb0fe0d29e5ec3",
+    ),
+    "nist_step_dxf": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/Purdue/Sanjeev_Trika/step/step.dxf",
+        "766a32244631775aad54b910eaf9bd40e916c1b3",
+    ),
+    "nist_gear_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/VDS/gear/gear.stp",
+        "dcd4e983bec3e422ffd874b5cbbb657dee271fbc",
+    ),
+    "nist_disc_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/VDS/disc/disc.stp",
+        "e4a4690b7473e6e18e6d96d09b08b747df9d1e1f",
+    ),
+    "nist_bracket_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/STEP/STI/bracket1-Part/bracket1-Part.stp",
+        "02841d39d7683e40bbd049e102c9c7c4e3d39411",
+    ),
+    "nist_piston_step": (
+        "usnistgov/engineering-design-models",
+        "dc4ed1c352bfa7fa0976c6abc6074a7a40aa1d5a",
+        "models/STEP/STI/piston/piston.stp",
+        "761c7f4af53c3f9e0ea00d246889d4002d1063eb",
+    ),
 }
 
 
@@ -152,3 +188,24 @@ def test_controlled_dimension_mutation_on_authentic_drawing(public_data, tmp_pat
         "source": str(src.name), "altered_entity": handle,
         "rule_detected": matches[0]["rule"], "status": matches[0]["status"]
     }, ensure_ascii=False))
+
+
+def test_nist_historical_dxf_files(public_data):
+    """Independent NIST CAD archive: report actual parse coverage."""
+    for key in ("nist_hole_dxf", "nist_step_dxf"):
+        path = public_data[key]
+        doc = ezdxf.readfile(path)
+        audit = doc.audit()
+        assert not audit.errors, f"NIST DXF validation errors for {key}: {audit.errors}"
+        result = inspect_dxf(str(path))
+        assert result["all_entity_types"], f"empty DXF model: {key}"
+        print("NIST_DXF " + json.dumps(result_record(key, path, result), ensure_ascii=False))
+
+
+def test_nist_historical_step_files(public_data):
+    """Read native NIST STEP models without pretending their designs are certified."""
+    for key in ("nist_gear_step", "nist_disc_step", "nist_bracket_step", "nist_piston_step"):
+        path = public_data[key]
+        result = inspect_step(str(path))
+        assert result["part_count"] >= 1, f"NIST model has no readable solids: {key}"
+        print("NIST_STEP " + json.dumps(result_record(key, path, result), ensure_ascii=False))
