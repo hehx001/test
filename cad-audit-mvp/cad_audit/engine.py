@@ -13,55 +13,13 @@ def issue(rule, title, severity, status, source, entity, evidence, advice):
                 source=source, entity=entity, evidence=evidence, advice=advice)
 
 
+from .dimension_rules import check_dimension
+from .title_blocks import FIELD_NAMES, extract_attributes, field_key, part_key, material_key
+
+
 def norm(s):
-    return re.sub(r"[\s\-_]", "", str(s or "")).upper()
-
-
-FIELD_NAMES = {
-    "part": {"PARTNO", "PARTNUMBER", "PARTNUM", "PARTID", "零件号", "物料编码", "图号"},
-    "material": {"MATERIAL", "MAT", "材质", "材料", "材料牌号"},
-    "revision": {"REV", "REVISION", "VERSION", "版本", "版本号"},
-}
-
-
-def extract_attributes(document):
-    """Only explicit INSERT attribute values are treated as title-block evidence."""
-    found = {}
-    for layout in document.layouts:
-        for ins in layout.query("INSERT"):
-            for attr in ins.attribs:
-                tag = norm(attr.dxf.tag)
-                for field, aliases in FIELD_NAMES.items():
-                    if tag in aliases and attr.dxf.text.strip():
-                        found.setdefault(field, set()).add(attr.dxf.text.strip())
-    return {key: sorted(values) for key, values in found.items()}
-
-
-_DIM_VALUE_PATTERN = re.compile(
-    r'^\s*(?:R|Ø|⌀|Φ|%%[cC])?\s*'
-    r'(?P<value>\d+-\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)'
-    r'\s*(?:"|in|mm)?\s*R?\s*$', re.IGNORECASE
-)
-
-
-def _parse_dimension_number(label: str):
-    """Parse a conservative subset of numeric dimension overrides.
-
-    Supports decimal, common fractions, mixed fractions, diameter/radius
-    markers, and inch/mm suffixes. Returns None for compound notes/callouts.
-    """
-    m = _DIM_VALUE_PATTERN.fullmatch(label.strip())
-    if not m:
-        return None
-    x = m.group("value")
-    if "-" in x and "/" in x:
-        whole, fraction = x.split("-", 1)
-        a, b = fraction.split("/", 1)
-        return float(whole) + float(a) / float(b) if float(b) else None
-    if "/" in x:
-        a, b = x.split("/", 1)
-        return float(a) / float(b) if float(b) else None
-    return float(x)
+    """Legacy field-tag normalization; NEVER use to identify a part."""
+    return field_key(s)
 
 
 def inspect_dxf(path: str):
@@ -76,6 +34,7 @@ def inspect_dxf(path: str):
     dim_stats = {"default_or_placeholder": 0, "numeric_matches": 0,
                  "numeric_conflicts": 0, "custom_unverified": 0}
     custom_samples = []
+    unit_code = int(doc.header.get("$INSUNITS", 0))
     all_types = {}
     blocks = {"references": 0, "virtual_entities": 0, "empty_references": 0,
               "unexpanded_references": 0, "examples": []}
@@ -131,36 +90,14 @@ def inspect_dxf(path: str):
             if kind in counts:
                 counts[kind] += 1
             if kind == "DIMENSION":
-                shown = str(ent.dxf.get("text", "") or "").strip()
-                if not shown or "<>" in shown:
-                    dim_stats["default_or_placeholder"] += 1
-                else:
-                    displayed = _parse_dimension_number(shown)
-                    raw = None
-                    try:
-                        m = ent.get_measurement()
-                        if isinstance(m, (int, float)) and math.isfinite(float(m)):
-                            raw = float(m)
-                    except (ValueError, TypeError, ArithmeticError):
-                        pass
-                    # Without explicit source dimensions/angle semantics and
-                    # DIMLFAC style interpretation, a numeric discrepancy
-                    # must be reviewed, not automatically condemned.
-                    if displayed is not None and raw is not None:
-                        if abs(displayed - raw) <= max(1e-4, abs(raw) * 1e-4):
-                            dim_stats["numeric_matches"] += 1
-                        else:
-                            dim_stats["numeric_conflicts"] += 1
-                            findings.append(issue("DXF-001", "尺寸文字与原始几何测量值不一致",
-                                                  "warning", "needs_review", layout.name, handle,
-                                                  {"shown": shown, "parsed_value": displayed,
-                                                   "raw_measurement": round(raw, 6),
-                                                   "note": "需再核查DIMLFAC、单位换算、标注类型与特殊公差要求"},
-                                                  "核查原始几何、尺寸样式和人工修改原因。"))
-                    else:
-                        dim_stats["custom_unverified"] += 1
-                        if len(custom_samples) < 5:
-                            custom_samples.append({"entity": handle, "shown": shown})
+                classification, evidence = check_dimension(ent, unit_code, layout.name)
+                dim_stats[classification] += 1
+                if classification == "numeric_conflicts":
+                    findings.append(issue("DXF-001", "尺寸显示值与实体定义测量结果不一致",
+                                          "warning", "needs_review", layout.name, handle,
+                                          evidence, "复核实际尺寸对象、有效尺寸样式与原始几何关联。"))
+                elif classification == "custom_unverified" and len(custom_samples) < 12:
+                    custom_samples.append({"entity": handle, **evidence})
                 p = ent.dxf.get("defpoint", None)
                 if p is not None:
                     drawing.append({"type": "POINT", "id": handle, "xy": [float(p.x), float(p.y)]})
@@ -195,11 +132,17 @@ def inspect_dxf(path: str):
         findings.append(issue("DXF-005", "部分特殊尺寸注释未完成数值校核", "info", "needs_review",
                               "DRAWING", "DIMENSION", {"count": dim_stats["custom_unverified"],
                               "samples": custom_samples}, "特殊尺寸文本需结合原始设计要求复核。"))
-    units = int(doc.header.get("$INSUNITS", 0))
+    units = unit_code
     if units == 0:
         findings.append(issue("DXF-004", "文件未声明插入单位", "info", "needs_review", "HEADER", "$INSUNITS",
                               {"INSUNITS": 0}, "确认图纸设计单位和外部参照比例。"))
     attrs = extract_attributes(doc)
+    if attrs.get("title_scan_warnings"):
+        findings.append(issue("DOC-002", "部分图签或嵌套属性未能可靠取得",
+                              "warning", "needs_review", "TITLE", "INSERT",
+                              {"examples": attrs["title_scan_warnings"][:10],
+                               "count": len(attrs["title_scan_warnings"])},
+                              "在原生CAD中核实图签实例和所依赖的图块。"))
     for key, values in attrs.items():
         if len(values) > 1:
             findings.append(issue("DOC-001", "图框属性存在多个不同取值", "warning", "needs_review", "TITLE", key,
@@ -213,6 +156,7 @@ def inspect_dxf(path: str):
 
 
 def inspect_bom(raw: bytes, drawing_attrs: dict):
+    """Compare released BOM rows and individual title instances by exact part ID."""
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -226,23 +170,26 @@ def inspect_bom(raw: bytes, drawing_attrs: dict):
     colmap = {}
     for name in rows[0].keys():
         for field, aliases in FIELD_NAMES.items():
-            if norm(name) in aliases:
+            if field_key(name) in aliases:
                 colmap[field] = name
-        if norm(name) in {"QTY", "QUANTITY", "数量", "用量"}:
+        if field_key(name) in {"QTY", "QUANTITY", "数量", "用量"}:
             colmap["qty"] = name
     if "part" not in colmap:
         raise ValueError("BOM缺少零件号列（例如part_no或图号）")
+
     findings, parts = [], {}
     for index, row in enumerate(rows, 2):
-        part = (row.get(colmap["part"]) or "").strip()
+        part = part_key(row.get(colmap["part"]))
         if not part:
             findings.append(issue("BOM-001", "BOM缺失零件号", "warning", "confirmed",
                                   "BOM", f"row:{index}", {"row": index}, "补全零件号。"))
             continue
-        key = norm(part)
+        key = part_key(part)  # don't erase hyphens, underscores, or embedded spaces
         if key in parts:
-            findings.append(issue("BOM-002", "BOM零件号重复", "warning", "needs_review", "BOM", f"row:{index}",
-                                  {"part_no": part, "first_row": parts[key][0]}, "核查是否为合法的分行明细。"))
+            findings.append(issue("BOM-002", "BOM零件号重复", "warning", "needs_review",
+                                  "BOM", f"row:{index}",
+                                  {"part_no": part, "first_row": parts[key][0]},
+                                  "核查是否为合法的分行明细。"))
         else:
             parts[key] = (index, row)
         if "qty" in colmap:
@@ -251,24 +198,78 @@ def inspect_bom(raw: bytes, drawing_attrs: dict):
                 if float(q) <= 0 or not math.isfinite(float(q)):
                     raise ValueError()
             except ValueError:
-                findings.append(issue("BOM-003", "BOM数量无效", "warning", "confirmed", "BOM", f"row:{index}",
+                findings.append(issue("BOM-003", "BOM数量无效", "warning", "confirmed",
+                                      "BOM", f"row:{index}",
                                       {"part_no": part, "qty": q}, "核查物料数量。"))
-    dparts = drawing_attrs.get("part", [])
-    if len(dparts) == 1:
-        key = norm(dparts[0])
-        if key not in parts:
-            findings.append(issue("XREF-001", "图纸零件号未在BOM中找到", "warning", "needs_review",
-                                  "DRAWING+BOM", "part", {"drawing_part": dparts[0]},
-                                  "核对图纸与BOM的发布版本及所属装配体。"))
-        elif "material" in colmap and len(drawing_attrs.get("material", [])) == 1:
-            rownum, row = parts[key]
-            a = drawing_attrs["material"][0]
-            b = (row.get(colmap["material"]) or "").strip()
-            if b and norm(a) != norm(b):
-                findings.append(issue("XREF-002", "图纸与BOM材料名称不一致", "warning", "confirmed",
-                                      "DRAWING+BOM", f"row:{rownum}", {"drawing": a, "bom": b, "part_no": dparts[0]},
-                                      "核实材料牌号及变更记录；名称不一致不必然代表材料技术上不等效。"))
-    return {"row_count": len(rows), "columns": list(colmap.keys()), "findings": findings}
+    records = drawing_attrs.get("title_records")
+    if records is None:
+        records = []
+        # Compatibility with callers that supply one already verified title.
+        dparts = drawing_attrs.get("part", [])
+        if len(dparts) == 1:
+            rec = {"part": dparts[0], "instance": "legacy-single-title"}
+            for key in ("material", "revision"):
+                vals = drawing_attrs.get(key, [])
+                if len(vals) == 1:
+                    rec[key] = vals[0]
+            records.append(rec)
+    if drawing_attrs.get("_dxf_attached") and not records:
+        findings.append(issue("XREF-003", "没有可靠图签，跨文件核查未完成",
+                              "info", "needs_review", "DRAWING+BOM", "TITLE",
+                              {"required": ["part", "material", "revision"]},
+                              "检查原始图签与嵌套图块，补充有效编号后重新比对。"))
+    for record in records:
+        path = str(record.get("instance", "TITLE"))
+        part = part_key(record.get("part"))
+        if not part:
+            findings.append(issue("XREF-003", "图签缺少可核实零件编号",
+                                  "info", "needs_review", "DRAWING+BOM", path,
+                                  {"title_record": record},
+                                  "本图签的BOM关联检查未完成；补齐零件编号。"))
+            continue
+        match = parts.get(part)
+        if match is None:
+            findings.append(issue("XREF-001", "图纸零件号未在BOM中找到",
+                                  "warning", "needs_review", "DRAWING+BOM", path,
+                                  {"drawing_part": part, "title_instance": path},
+                                  "核对发布版图纸与BOM的零件编号，保留内部连字符和下划线。"))
+            continue
+        row_no, row = match
+        if "material" in colmap:
+            drawing_material = str(record.get("material", "")).strip()
+            bom_material = str(row.get(colmap["material"]) or "").strip()
+            if not drawing_material or not bom_material:
+                findings.append(issue("XREF-004", "材料信息缺失，材料核查未完成",
+                                      "info", "needs_review", "DRAWING+BOM", path,
+                                      {"part_no": part, "drawing": drawing_material,
+                                       "bom": bom_material, "bom_row": row_no},
+                                      "核实图纸与BOM的材料字段。"))
+            elif material_key(drawing_material) != material_key(bom_material):
+                findings.append(issue("XREF-002", "图纸与BOM材料名称不一致",
+                                      "warning", "confirmed", "DRAWING+BOM", path,
+                                      {"part_no": part, "drawing": drawing_material,
+                                       "bom": bom_material, "bom_row": row_no},
+                                      "复核材料牌号与变更记录；名称差异不直接等于材料不等效。"))
+        if "revision" in colmap:
+            drawing_rev = str(record.get("revision", "")).strip()
+            bom_rev = str(row.get(colmap["revision"]) or "").strip()
+            if not drawing_rev or not bom_rev:
+                findings.append(issue("XREF-005", "版本信息缺失，核查未完成",
+                                      "info", "needs_review", "DRAWING+BOM", path,
+                                      {"part_no": part, "bom_row": row_no},
+                                      "补充图纸与BOM版本后执行一致性检查。"))
+            elif drawing_rev != bom_rev:
+                findings.append(issue("XREF-006", "图纸与BOM版本不一致",
+                                      "warning", "needs_review", "DRAWING+BOM", path,
+                                      {"part_no": part, "drawing": drawing_rev,
+                                       "bom": bom_rev, "bom_row": row_no},
+                                      "核实已批准的正式设计版本。"))
+    return {"row_count": len(rows), "columns": list(colmap.keys()),
+            "title_instances_checked": len(records),
+            "crossfile_check_complete": bool(records) and all(
+                part_key(rec.get("part")) and part_key(rec.get("part")) in parts
+                for rec in records
+            ), "findings": findings}
 
 
 def inspect_step(path: str, max_parts: int = 80, max_pairs: int = 2000):
