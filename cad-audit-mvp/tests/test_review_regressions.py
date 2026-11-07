@@ -6,6 +6,7 @@ reference drawings contain manufacturing design defects.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from pathlib import Path
 
@@ -137,16 +138,26 @@ def test_skipped_nonuniform_block_entity_reports_gap(tmp_path):
     assert any(x["rule"] == "DXF-003" for x in report["findings"])
 
 
-def test_large_polyline_preview_is_bounded(tmp_path):
+def _check_polyline_preview(tmp_path, count):
     doc = ezdxf.new("R2010")
     doc.modelspace().add_lwpolyline(
-        [(float(i), float(i % 13)) for i in range(150_000)])
+        [(float(i), float(i % 13)) for i in range(count)])
     path = tmp_path / "large_polyline.dxf"
     doc.saveas(path)
     report = inspect_dxf(str(path))
     assert report["preview_stats"]["points_kept"] <= 5000
-    assert report["preview_stats"]["points_omitted"] >= 145_000
+    assert report["preview_stats"]["points_omitted"] >= count - 5000
     assert len(report["preview"][0]["pts"]) <= 5000
+
+
+def test_large_polyline_preview_is_bounded(tmp_path):
+    _check_polyline_preview(tmp_path, 25_000)
+
+
+@pytest.mark.skipif(os.environ.get("CAD_STRESS_TEST") != "1",
+                    reason="Full 150k-vertex stress case is opt-in for CI efficiency")
+def test_150k_polyline_preview_stress(tmp_path):
+    _check_polyline_preview(tmp_path, 150_000)
 
 
 def make_assembly(path, *, open_shell=False):
@@ -256,3 +267,51 @@ def test_invalid_model_url_preserves_engine_report(monkeypatch):
     assert response.status_code == 200
     assert response.json()["ai_review"]["status"] == "error"
     assert response.json()["summary"]["findings"] >= 1
+
+
+def test_worker_failure_does_not_erase_prior_dxf_results(monkeypatch):
+    """STEP failure must remain explicit after an otherwise valid DXF scan."""
+    from cad_audit.engine import inspect_dxf
+    from cad_audit.geometry_worker import GeometryWorkerTimeout
+
+    def selective_worker(kind, path, timeout_seconds=45):
+        if kind == "dxf":
+            return inspect_dxf(path)
+        raise GeometryWorkerTimeout("模拟超时")
+
+    monkeypatch.setattr("cad_audit.api.run_geometry_worker", selective_worker)
+    doc = ezdxf.new("R2010")
+    doc.modelspace().add_line((0, 0), (0, 0))
+    from io import StringIO
+    buffer = StringIO()
+    doc.write(buffer)
+    result = TestClient(app).post(
+        "/api/review",
+        files={
+            "dxf": ("part.dxf", buffer.getvalue().encode("utf-8")),
+            "step": ("assembly.step", b"THIS IS A SIMULATED UNPARSABLE STEP"),
+        },
+    )
+    assert result.status_code == 200
+    payload = result.json()
+    assert any(x["rule"] == "DXF-002" for x in payload["findings"])
+    assert any(x["rule"] == "SYS-002" and x["status"] == "failed"
+               for x in payload["findings"])
+    assert payload["summary"]["failed"] >= 1
+    assert payload["results"]["dxf"]["sha256"]
+    assert payload["results"]["step"]["sha256"]
+
+
+def test_bom_missing_material_version_tracks_incomplete_check(tmp_path):
+    doc = ezdxf.new("R2010")
+    title = doc.blocks.new("ID")
+    title.add_attdef(tag="PART_NO", insert=(0, 0), text="X-5")
+    ins = doc.modelspace().add_blockref("ID", (0, 0))
+    ins.add_auto_attribs({"PART_NO": "X-5"})
+    path = tmp_path / "title.dxf"
+    doc.saveas(path)
+    attrs = inspect_dxf(str(path))["attributes"]
+    report = inspect_bom(b"part_no,qty\nX-5,1\n", attrs)
+    assert report["crossfile_check_complete"] is False
+    assert set(report["missing_columns"]) == {"material", "revision"}
+    assert any(x["rule"] == "XREF-007" for x in report["findings"])
