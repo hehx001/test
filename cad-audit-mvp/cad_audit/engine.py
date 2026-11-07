@@ -77,11 +77,49 @@ def inspect_dxf(path: str):
                  "numeric_conflicts": 0, "custom_unverified": 0}
     custom_samples = []
     all_types = {}
+    blocks = {"references": 0, "virtual_entities": 0,
+              "unexpanded_references": 0, "examples": []}
+
+    def visible_entities(layout):
+        # Never explode() a design file: virtual_entities() retains the source.
+        # Trace paths preserve the referring INSERT's original DXF handle.
+        def visit(ent, path, depth):
+            yield ent, path
+            if ent.dxftype() != "INSERT":
+                return
+            blocks["references"] += 1
+            if depth >= 8 or blocks["virtual_entities"] >= 15000:
+                blocks["unexpanded_references"] += 1
+                if len(blocks["examples"]) < 8:
+                    blocks["examples"].append({"entity": path, "reason": "depth or entity cap"})
+                return
+            try:
+                children_seen = False
+                for index, child in enumerate(ent.virtual_entities()):
+                    children_seen = True
+                    if blocks["virtual_entities"] >= 15000:
+                        blocks["unexpanded_references"] += 1
+                        if len(blocks["examples"]) < 8:
+                            blocks["examples"].append({"entity": path, "reason": "entity cap"})
+                        break
+                    blocks["virtual_entities"] += 1
+                    yield from visit(child, path + "/" + str(index), depth + 1)
+                if not children_seen:
+                    blocks["unexpanded_references"] += 1
+                    if len(blocks["examples"]) < 8:
+                        blocks["examples"].append({"entity": path, "reason": "empty block reference"})
+            except Exception as exc:
+                blocks["unexpanded_references"] += 1
+                if len(blocks["examples"]) < 8:
+                    blocks["examples"].append({"entity": path, "reason": type(exc).__name__})
+
+        for entity in layout:
+            yield from visit(entity, str(entity.dxf.get("handle", "")), 0)
+
     for layout in doc.layouts:
-        for ent in layout:
+        for ent, handle in visible_entities(layout):
             kind = ent.dxftype()
             all_types[kind] = all_types.get(kind, 0) + 1
-            handle = ent.dxf.get("handle", "")
             if kind in counts:
                 counts[kind] += 1
             if kind == "DIMENSION":
@@ -139,6 +177,12 @@ def inspect_dxf(path: str):
                 if len(pts) > 1:
                     drawing.append({"type": "POLYLINE", "id": handle, "pts": pts,
                                     "closed": bool(ent.closed), "has_bulge": any(abs(p[4]) > 1e-10 for p in ent.get_points("xyseb"))})
+    if blocks["unexpanded_references"]:
+        findings.append(issue("DXF-006", "部分图块未成功展开，检查范围不完整",
+                              "warning", "needs_review", "DRAWING", "INSERT",
+                              {"unexpanded": blocks["unexpanded_references"],
+                               "examples": blocks["examples"]},
+                              "检查图块引用、外部参照与CAD软件原图。"))
     if dim_stats["custom_unverified"]:
         findings.append(issue("DXF-005", "部分特殊尺寸注释未完成数值校核", "info", "needs_review",
                               "DRAWING", "DIMENSION", {"count": dim_stats["custom_unverified"],
@@ -154,9 +198,9 @@ def inspect_dxf(path: str):
                                   {"field": key, "values": values}, "核对是否包含多个图框或多个版本。"))
     return {"filename": Path(path).name, "attributes": attrs, "units": units,
             "entity_counts": counts, "dimension_text_stats": dim_stats,
-            "all_entity_types": all_types,
+            "all_entity_types": all_types, "block_expansion": blocks,
             "unrendered_entity_types": {k: v for k, v in all_types.items()
-                                        if k not in {"LINE", "CIRCLE", "LWPOLYLINE"}},
+                                        if k not in {"LINE", "CIRCLE", "LWPOLYLINE", "INSERT"}},
             "preview": drawing, "findings": findings}
 
 

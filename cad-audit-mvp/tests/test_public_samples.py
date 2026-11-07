@@ -120,6 +120,7 @@ def result_record(key, path, result):
         details["dimension_text_stats"] = result["dimension_text_stats"]
         details["all_entity_types"] = result["all_entity_types"]
         details["unrendered_entity_types"] = result["unrendered_entity_types"]
+        details["block_expansion"] = result["block_expansion"]
     if "part_count" in result:
         details["part_count"] = result["part_count"]
         details["candidate_pairs"] = result["candidate_pairs"]
@@ -199,6 +200,10 @@ def test_nist_historical_dxf_files(public_data):
         assert not audit.errors, f"NIST DXF validation errors for {key}: {audit.errors}"
         result = inspect_dxf(str(path))
         assert result["all_entity_types"], f"empty DXF model: {key}"
+        assert result["block_expansion"]["references"] >= 8, key
+        assert result["entity_counts"]["LINE"] >= 40, key
+        assert result["block_expansion"]["unexpanded_references"] == 0, key
+        assert result["preview"], f"no expanded NIST block geometry: {key}"
         print("NIST_DXF " + json.dumps(result_record(key, path, result), ensure_ascii=False))
 
 
