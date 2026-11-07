@@ -70,10 +70,14 @@ def _configuration(provider: str):
     url = os.getenv(config["url_env"], config["default_url"]).strip().rstrip("/")
     if not MODEL_NAME_RE.fullmatch(model):
         raise ModelConfigurationError("模型名称不符合要求")
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+        scheme, hostname, port = parsed.scheme, parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise ModelConfigurationError("模型服务地址格式不正确") from exc
     if (
-        parsed.scheme != "https" or not parsed.hostname
-        or parsed.username or parsed.password or parsed.port not in (None, 443)
+        scheme != "https" or not hostname
+        or parsed.username or parsed.password or port not in (None, 443)
         or parsed.query or parsed.fragment
     ):
         raise ModelConfigurationError("模型API地址必须为受支持的HTTPS地址")
@@ -111,10 +115,45 @@ def public_provider_status():
     return result
 
 
+def _selected_findings(report: dict, limit=20):
+    """Select by engineering category, not upload order.
+
+    The same (rule, entity) pair is sent only once to avoid repeated notices
+    crowding out interference or cross-file problems.
+    """
+    groups = {"STEP": [], "XREF": [], "DXF": [], "BOM": [], "DOC": [], "OTHER": []}
+    seen = set()
+    for f in report.get("findings", []):
+        rule, entity = str(f.get("rule", "")), str(f.get("entity", ""))
+        key = (rule, entity)
+        if not rule or not entity or key in seen:
+            continue
+        seen.add(key)
+        group = rule.split("-", 1)[0]
+        if group not in groups:
+            group = "OTHER"
+        groups[group].append(f)
+    order = ("STEP", "XREF", "DXF", "BOM", "DOC", "OTHER")
+    selected = []
+    # Round robin guarantees that an uncommon but critical category is not
+    # excluded by hundreds of low-severity DXF geometry notices.
+    while len(selected) < limit and any(groups.values()):
+        for group in order:
+            if groups[group] and len(selected) < limit:
+                # Within each group prefer high-severity items.
+                groups[group].sort(key=lambda f: (
+                    0 if f.get("severity") in ("critical", "error") else
+                    1 if f.get("severity") == "warning" else 2,
+                    str(f.get("rule", "")), str(f.get("entity", ""))))
+                selected.append(groups[group].pop(0))
+    return selected
+
+
 def _compact_report(report: dict):
     findings = report.get("findings", [])
+    selected = _selected_findings(report)
     limited = []
-    for item in findings[:20]:
+    for item in selected:
         evidence = json.dumps(item.get("evidence", {}), ensure_ascii=False, default=str)
         limited.append({
             "rule": str(item.get("rule", ""))[:60],
@@ -126,9 +165,11 @@ def _compact_report(report: dict):
         })
     results = report.get("results", {})
     return {
-        "notice": "这里只包含现有规则程序的摘要和部分证据；不包含全部图纸几何。",
+        "notice": "这里只包含已有规则事项的部分证据；不包含全部图纸几何。",
         "total_findings": len(findings),
         "included_findings": len(limited),
+        "excluded_findings": len(findings) - len(limited),
+        "selection_rule": "按工程类别轮流选择，类别内优先较高严重程度",
         "dxf_counts": results.get("dxf", {}).get("entity_counts", {}),
         "dimension_text_stats": results.get("dxf", {}).get("dimension_text_stats", {}),
         "step_part_count": results.get("step", {}).get("part_count"),
@@ -160,19 +201,21 @@ def _limit_text(value, length):
 
 
 def _filter_ai_review(payload, report, provider, model, usage):
+    selected = _selected_findings(report)
     allowed = {(str(f.get("rule", "")), str(f.get("entity", "")))
-               for f in report.get("findings", [])[:20]}
-    raw_checks = payload.get("checks", [])
+               for f in selected}
+    raw_checks = payload.get("checks")
     if not isinstance(raw_checks, list):
         raise ModelServiceError("模型返回的审核事项结构不符合要求")
     checked = []
     omitted = 0
+    seen = set()
     for raw in raw_checks[:40]:
         if not isinstance(raw, dict):
             omitted += 1
             continue
         rule, entity = str(raw.get("rule", "")), str(raw.get("entity", ""))
-        if (rule, entity) not in allowed:
+        if (rule, entity) not in allowed or (rule, entity) in seen:
             omitted += 1
             continue
         analysis = _limit_text(raw.get("analysis"), 1000)
@@ -183,11 +226,31 @@ def _filter_ai_review(payload, report, provider, model, usage):
         if len(checked) < 12:
             checked.append({"rule": rule, "entity": entity,
                             "analysis": analysis, "action": action})
+            seen.add((rule, entity))
+        else:
+            omitted += 1
+
+    total = len(report.get("findings", []))
+    sent = len(selected)
+    accepted = len(checked)
+    if not accepted:
+        status = "invalid"
+        summary = "模型未提供可接受的规则解释，已有工程规则结果保持不变。"
+    elif omitted or sent < total or accepted < sent:
+        status = "partial"
+        summary = f"模型已为{accepted}项规则疑点提供辅助说明，部分事项未得到有效解释。"
+    else:
+        status = "ok"
+        summary = f"模型已为{accepted}项规则疑点提供辅助说明。"
     return {
-        "status": "ok", "provider": provider, "model": model,
-        "summary": _limit_text(payload.get("summary"), 1100),
+        "status": status, "provider": provider, "model": model,
+        "summary": summary,
         "checks": checked,
-        "scope_note": _limit_text(payload.get("scope_note"), 850),
+        "scope_note": (f"规则事项总数{total}项；实际送审{sent}项；"
+                       f"收到有效解释{accepted}项。"
+                       "仅供设计人员复核；模型未对全图或制造条件作完整验证。"),
+        "coverage": {"total": total, "sent": sent, "excluded": max(0, total - sent),
+                     "accepted": accepted, "unexplained": max(0, sent - accepted)},
         "omitted_unmatched": omitted,
         "usage": {
             "prompt_tokens": usage.get("prompt_tokens"),
