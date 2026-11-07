@@ -37,6 +37,9 @@ def _mock_transport(expected_key, expected_model, expected_host):
         assert request.headers["authorization"] == "Bearer " + expected_key
         body = json.loads(request.content)
         assert body["model"] == expected_model
+        if expected_host == "api.deepseek.com":
+            assert body["thinking"] == {"type": "disabled"}
+            assert body["response_format"] == {"type": "json_object"}
         assert body["messages"][1]["role"] == "user"
         user_data = json.loads(body["messages"][1]["content"].split("\n", 1)[1])
         assert user_data["findings"][0]["rule"] == "DXF-001"
@@ -168,3 +171,19 @@ def test_selected_provider_failure_preserves_cad_results(monkeypatch):
     bad = client.post("/api/review", files={"dxf": ("part.dxf", _small_dxf())},
                       data={"provider": "unknown"})
     assert bad.status_code == 422
+
+
+def test_qwen_coding_plan_official_endpoint(monkeypatch):
+    monkeypatch.setenv("QWEN_API_KEY", "sk-synthetic-only-for-test")
+    monkeypatch.setenv("QWEN_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1")
+    from cad_audit.models import _configuration
+    conf = _configuration("qwen")
+    assert conf["url"] == "https://coding.dashscope.aliyuncs.com/v1"
+
+
+def test_rejects_mismatched_coding_plan_path(monkeypatch):
+    monkeypatch.setenv("QWEN_API_KEY", "sk-synthetic-only-for-test")
+    monkeypatch.setenv("QWEN_BASE_URL", "https://coding.dashscope.aliyuncs.com/compatible-mode/v1")
+    from cad_audit.models import _configuration
+    with pytest.raises(ModelConfigurationError):
+        _configuration("qwen")

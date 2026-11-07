@@ -79,11 +79,16 @@ def _configuration(provider: str):
         raise ModelConfigurationError("模型API地址必须为受支持的HTTPS地址")
     hostname = parsed.hostname.lower()
     if provider == "qwen":
-        valid_host = hostname in {
-            "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com",
-            "dashscope-us.aliyuncs.com", "cn-hongkong.dashscope.aliyuncs.com",
-        } or hostname.endswith(".maas.aliyuncs.com")
-        valid_path = parsed.path == "/compatible-mode/v1"
+        # Coding Plan uses a different official API path than pay-as-you-go.
+        if hostname == "coding.dashscope.aliyuncs.com":
+            valid_host = True
+            valid_path = parsed.path == "/v1"
+        else:
+            valid_host = hostname in {
+                "dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com",
+                "dashscope-us.aliyuncs.com", "cn-hongkong.dashscope.aliyuncs.com",
+            } or hostname.endswith(".maas.aliyuncs.com")
+            valid_path = parsed.path == "/compatible-mode/v1"
     else:
         valid_host = hostname == "api.deepseek.com"
         valid_path = parsed.path in ("", "/", "/v1")
@@ -214,6 +219,11 @@ async def generate_ai_review(report: dict, provider: str, *, transport=None):
         "stream": False,
         "max_tokens": 1500,
     }
+    # DeepSeek currently enables lengthy reasoning by default. This endpoint
+    # only needs a concise, machine-readable explanation of confirmed records.
+    if provider == "deepseek":
+        body["thinking"] = {"type": "disabled"}
+        body["response_format"] = {"type": "json_object"}
     try:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(45.0, connect=8.0),
