@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 import re
 from urllib.parse import urlsplit
 
@@ -39,6 +42,9 @@ PROVIDERS = {
         "default_url": "https://api.deepseek.com",
     },
 }
+# Optional local configuration, never committed to GitHub. Shell environment takes precedence.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+
 MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$")
 
 SYSTEM_INSTRUCTIONS = (
