@@ -36,6 +36,9 @@ def inspect_dxf(path: str):
     custom_samples = []
     unit_code = int(doc.header.get("$INSUNITS", 0))
     all_types = {}
+    preview_points_used = 0
+    preview_points_skipped = 0
+    PREVIEW_POINTS_MAX = 5000
     blocks = {"references": 0, "virtual_entities": 0, "empty_references": 0,
               "unexpanded_references": 0, "skipped_entities": 0,
               "minsert_instances": 0, "examples": []}
@@ -130,29 +133,43 @@ def inspect_dxf(path: str):
                 elif classification == "custom_unverified" and len(custom_samples) < 12:
                     custom_samples.append({"entity": handle, **evidence})
                 p = ent.dxf.get("defpoint", None)
-                if p is not None:
+                if p is not None and preview_points_used < PREVIEW_POINTS_MAX:
                     drawing.append({"type": "POINT", "id": handle, "xy": [float(p.x), float(p.y)]})
+                    preview_points_used += 1
             elif kind == "LINE":
                 a, b = ent.dxf.start, ent.dxf.end
                 if math.dist((a.x, a.y, a.z), (b.x, b.y, b.z)) < 1e-9:
                     findings.append(issue("DXF-002", "零长度直线", "warning", "confirmed",
                                           layout.name, handle, {"start": [a.x, a.y], "end": [b.x, b.y]},
                                           "检查该图元是否为冗余图形。"))
-                if len(drawing) < 3000:
+                if len(drawing) < 3000 and preview_points_used + 2 <= PREVIEW_POINTS_MAX:
                     drawing.append({"type": "LINE", "id": handle,
                                     "a": [a.x, a.y], "b": [b.x, b.y]})
+                    preview_points_used += 2
             elif kind == "CIRCLE":
                 c, r = ent.dxf.center, float(ent.dxf.radius)
                 if r <= 0:
                     findings.append(issue("DXF-003", "圆的半径非正数", "warning", "confirmed",
                                           layout.name, handle, {"radius": r}, "检查异常几何图元。"))
-                if len(drawing) < 3000 and r > 0:
+                if len(drawing) < 3000 and r > 0 and preview_points_used + 2 <= PREVIEW_POINTS_MAX:
                     drawing.append({"type": "CIRCLE", "id": handle, "c": [c.x, c.y], "r": r})
-            elif kind == "LWPOLYLINE" and len(drawing) < 3000:
-                pts = [[float(x), float(y)] for x, y in ent.get_points("xy")]
-                if len(pts) > 1:
+                    preview_points_used += 2
+            elif kind == "LWPOLYLINE":
+                original = [[float(x), float(y)] for x, y in ent.get_points("xy")]
+                budget = PREVIEW_POINTS_MAX - preview_points_used
+                if len(original) > 1 and budget >= 2 and len(drawing) < 3000:
+                    step = max(1, math.ceil((len(original) - 1) / (budget - 1)))
+                    indices = list(range(0, len(original) - 1, step)) + [len(original) - 1]
+                    pts = [original[i] for i in indices]
+                    preview_points_skipped += len(original) - len(pts)
+                    preview_points_used += len(pts)
                     drawing.append({"type": "POLYLINE", "id": handle, "pts": pts,
-                                    "closed": bool(ent.closed), "has_bulge": any(abs(p[4]) > 1e-10 for p in ent.get_points("xyseb"))})
+                                    "closed": bool(ent.closed),
+                                    "has_bulge": any(abs(p[4]) > 1e-10
+                                                     for p in ent.get_points("xyseb")),
+                                    "preview_simplified": len(pts) < len(original)})
+                elif len(original) > 1:
+                    preview_points_skipped += len(original)
     if blocks["unexpanded_references"]:
         findings.append(issue("DXF-006", "部分图块未成功展开，检查范围不完整",
                               "warning", "needs_review", "DRAWING", "INSERT",
@@ -188,7 +205,12 @@ def inspect_dxf(path: str):
             "all_entity_types": all_types, "block_expansion": blocks,
             "unrendered_entity_types": {k: v for k, v in all_types.items()
                                         if k not in {"LINE", "CIRCLE", "LWPOLYLINE", "INSERT"}},
-            "preview": drawing, "findings": findings}
+            "preview": drawing,
+            "preview_stats": {"point_limit": PREVIEW_POINTS_MAX,
+                              "points_kept": preview_points_used,
+                              "points_omitted": preview_points_skipped,
+                              "simplified": preview_points_skipped > 0},
+            "findings": findings}
 
 
 def inspect_bom(raw: bytes, drawing_attrs: dict):

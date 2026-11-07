@@ -72,7 +72,10 @@ form.addEventListener('submit',async ev=>{
  if(![...fd.keys()].length){message.textContent='请先选择文件。';return}
  fd.set('provider',document.getElementById('provider').value);
  const btn=document.getElementById('run');btn.disabled=true;message.textContent='正在解析并计算…';
- try{const res=await fetch('/api/review',{method:'POST',body:fd});const data=await res.json();if(!res.ok)throw new Error(data.detail||'审核失败');report=data;render(data);message.textContent='检查完成。';document.getElementById('download').disabled=false}
+ try{const res=await fetch('/api/review',{method:'POST',body:fd});const data=await res.json();if(!res.ok)throw new Error(data.detail||'审核失败');report=data;document.getElementById('download').disabled=false;
+ try{render(data);message.textContent='检查完成。'}
+ catch(drawError){message.textContent='工程检查已完成；图纸预览无法呈现，仍可下载JSON报告。';
+ console.warn('CAD preview failed:',drawError)}}
  catch(err){message.textContent='检查失败：'+err.message}finally{btn.disabled=false}
 });
 document.getElementById('download').addEventListener('click',()=>{
@@ -83,8 +86,13 @@ function renderAI(result){
  if(result.status==='disabled'){root.append(el('p','未选择模型；本次只运行工程规则。','hint'));return}
  if(result.status==='error'){root.append(el('p','模型调用未完成：'+(result.message||'未知错误')+'。CAD规则审核结果仍然有效。','hint'));return}
  if(result.status==='skipped'){root.append(el('p',result.message||'没有可供解释的规则疑点。','hint'));return}
- if(result.status!=='ok'){root.append(el('p','没有可用的模型审核结果。','hint'));return}
- root.append(el('div',result.provider+' · '+result.model,'note'));
+ if(result.status==='invalid'){root.append(el('p',result.summary||'模型解释未通过引用检查，工程规则结果仍保留。','hint'));
+ if(result.coverage)root.append(el('p','模型有效解释0项，拒收 '+(result.omitted_unmatched||0)+' 项。','hint'));return}
+ if(result.status!=='ok'&&result.status!=='partial'){root.append(el('p','没有可用的模型审核结果。','hint'));return}
+ root.append(el('div',result.provider+' · '+result.model+' · '+(result.status==='partial'?'部分有效':'有效'),'note'));
+ if(result.coverage)root.append(el('p','规则疑点 '+result.coverage.total+' 项，送审 '+result.coverage.sent+
+ ' 项，有效解释 '+result.coverage.accepted+' 项，未送审 '+result.coverage.excluded+
+ ' 项，拒收 '+(result.omitted_unmatched||0)+' 项。','hint'));
  root.append(el('p',result.summary||'模型未提供概述。','hint'));
  for(const item of result.checks||[]){
   const area=el('div',undefined,'ai-check');
@@ -116,8 +124,14 @@ function render(data){
 }
 function draw(root,objects,active){
  root.replaceChildren();if(!objects.length){root.append(el('div','没有可预览的基础二维几何','hint'));return}
- const xy=[];for(const o of objects){if(o.type==='LINE')xy.push(o.a,o.b);if(o.type==='POLYLINE')xy.push(...o.pts);if(o.type==='POINT')xy.push(o.xy);if(o.type==='CIRCLE')xy.push([o.c[0]-o.r,o.c[1]-o.r],[o.c[0]+o.r,o.c[1]+o.r])}
- if(!xy.length)return;const xs=xy.map(p=>p[0]),ys=xy.map(p=>p[1]),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);
+ let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+ function ext(p){const x=Number(p[0]),y=Number(p[1]);if(!Number.isFinite(x)||!Number.isFinite(y))return;
+ if(x<xmin)xmin=x;if(x>xmax)xmax=x;if(y<ymin)ymin=y;if(y>ymax)ymax=y}
+ for(const o of objects){if(o.type==='LINE'){ext(o.a);ext(o.b)}
+ if(o.type==='POLYLINE'){for(const p of o.pts)ext(p)}
+ if(o.type==='POINT')ext(o.xy);
+ if(o.type==='CIRCLE'){ext([o.c[0]-o.r,o.c[1]-o.r]);ext([o.c[0]+o.r,o.c[1]+o.r])}}
+ if(!Number.isFinite(xmin))return;
  const w=700,h=360,scale=Math.min((w-48)/(xmax-xmin||1),(h-48)/(ymax-ymin||1)),px=x=>24+(x-xmin)*scale,py=y=>h-24-(y-ymin)*scale;
  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',`0 0 ${w} ${h}`);svg.setAttribute('role','img');svg.setAttribute('aria-label','图纸基础轮廓示意');
  for(const o of objects){const hit=o.id===active;let tag='';let attrs={};if(o.type==='LINE'){tag='line';attrs={x1:px(o.a[0]),y1:py(o.a[1]),x2:px(o.b[0]),y2:py(o.b[1])}}
