@@ -1,5 +1,6 @@
 """Single-user prototype. Start on localhost; not an internet-facing production service."""
 import os
+import hashlib
 import tempfile
 from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -51,12 +52,14 @@ async def review(dxf: UploadFile | None = File(None),
                 f.write(raw); paths.append(f.name)
             result = inspect_dxf(f.name)
             result["filename"] = dxf.filename
+            result["sha256"] = hashlib.sha256(raw).hexdigest()
             report["results"]["dxf"] = result
             report["findings"].extend(result["findings"])
         if bom:
             raw, _ = await bounded(bom, {".csv"})
             attrs = report["results"].get("dxf", {}).get("attributes", {})
             result = inspect_bom(raw, attrs)
+            result["sha256"] = hashlib.sha256(raw).hexdigest()
             report["results"]["bom"] = result
             report["findings"].extend(result["findings"])
         if step:
@@ -64,6 +67,7 @@ async def review(dxf: UploadFile | None = File(None),
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
                 f.write(raw); paths.append(f.name)
             result = inspect_step(f.name)
+            result["sha256"] = hashlib.sha256(raw).hexdigest()
             report["results"]["step"] = result
             report["findings"].extend(result["findings"])
     except ValueError as exc:
@@ -74,10 +78,25 @@ async def review(dxf: UploadFile | None = File(None),
                 os.unlink(path)
             except OSError:
                 pass
-    report["summary"] = {"findings": len(report["findings"]),
-                         "confirmed": sum(p["status"] == "confirmed" for p in report["findings"]),
-                         "needs_review": sum(p["status"] == "needs_review" for p in report["findings"]),
-                         "formats": list(report["results"])}
+    counts = {}
+    for item in report["findings"]:
+        status = item["status"]
+        counts[status] = counts.get(status, 0) + 1
+    report["summary"] = {
+        "findings": len(report["findings"]),
+        "confirmed": counts.get("confirmed", 0),
+        "needs_review": counts.get("needs_review", 0),
+        "not_supported": counts.get("not_supported", 0),
+        "failed": counts.get("failed", 0),
+        "by_status": counts,
+        "formats": list(report["results"]),
+    }
+    report["coverage"] = {
+        "dxf": report["results"].get("dxf", {}).get("inspection_scope"),
+        "step_pairs": report["results"].get("step", {}).get("pair_counts"),
+        "bom_crossfile_complete": report["results"].get("bom", {}).get("crossfile_check_complete"),
+        "note": "未支持或失败的部分不能视为审核通过。",
+    }
     # Cloud calls are explicit. Original CAD files remain local: only a
     # bounded summary of the engineering checks is sent to the chosen API.
     report["ai_review"] = {"status": "disabled", "message": "仅执行本地工程规则检查"}

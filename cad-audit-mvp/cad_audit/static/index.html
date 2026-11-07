@@ -107,7 +107,14 @@ function renderAI(result){
 function render(data){
  ['total','confirmed','review'].forEach((k,i)=>document.getElementById(k).textContent=[data.summary.findings,data.summary.confirmed,data.summary.needs_review][i]);
  renderAI(data.ai_review||{status:'disabled'});
- const rs=data.results;document.getElementById('coverage').textContent='已处理：'+data.summary.formats.join('、')+(rs.step?` | STEP零件 ${rs.step.part_count} 件；候选零件对 ${rs.step.candidate_pairs} 组`: '');
+ const rs=data.results;
+ const pair=rs.step?.pair_counts;
+ const status=data.summary;
+ document.getElementById('coverage').textContent='已处理：'+status.formats.join('、')+
+ (pair?' | STEP候选配对 '+rs.step.candidate_pairs+'，计算成功 '+pair.calculated+
+ '，失败 '+pair.failed+'，未支持 '+pair.not_supported+'，包围盒排除 '+pair.bbox_excluded:'')+
+ (status.failed||status.not_supported?' | 未完成事项：'+(status.failed+status.not_supported):'')+
+ (rs.dxf?.preview_stats?.simplified?' | 二维预览已抽稀，不影响工程记录':'');
  const root=document.getElementById('workspace');root.replaceChildren();const wrap=el('div',undefined,'results');const left=el('div'),right=el('div');
  left.append(el('div','二维图纸简化预览（点击下方问题可标记相关图元）','section-title'));const svgBox=el('div',undefined);svgBox.id='preview';left.append(svgBox);
  const dd=el('p','预览仅显示部分基础图元，不能代替CAD软件中的原图。','hint');left.append(dd);
@@ -115,7 +122,8 @@ function render(data){
  right.append(el('div','检查发现','section-title'));
  if(!data.findings.length)right.append(el('p','本次已执行的规则未发现异常。其他审核项目未被本原型覆盖。','hint'));
  for(const [index,f] of data.findings.entries()){
-  const item=el('div',undefined,'finding');const b=el('button');const badge=el('span',f.status==='confirmed'?'已发现':'待复核','flag '+(f.status==='confirmed'?'confirmed':''));
+  const item=el('div',undefined,'finding');const b=el('button');const statusLabel={confirmed:'已发现',needs_review:'待复核',failed:'计算失败',not_supported:'未支持'};
+  const badge=el('span',statusLabel[f.status]||'待核实','flag '+(f.status==='confirmed'?'confirmed':''));
   b.append(el('div',`${index+1}. ${f.title}`,'f-title'),badge,el('div',`${f.rule} · ${f.source} · ${f.entity}`,'meta'));
   b.addEventListener('click',()=>{for(const o of right.querySelectorAll('.finding'))o.classList.remove('active');item.classList.add('active');details.replaceChildren(el('div','检查依据：'),el('pre',JSON.stringify(f.evidence,null,2)),el('div','审核建议：'+f.advice));draw(svgBox,rs.dxf?.preview||[],f.entity)});
   item.append(b);right.append(item);
