@@ -5,7 +5,8 @@ import tempfile
 from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from .engine import inspect_dxf, inspect_bom, inspect_step
+from .engine import inspect_dxf, inspect_bom, inspect_step, issue
+from .geometry_worker import run_geometry_worker, GeometryWorkerError
 from .models import (ModelConfigurationError, ModelServiceError,
                      generate_ai_review, public_provider_status)
 
@@ -50,7 +51,14 @@ async def review(dxf: UploadFile | None = File(None),
             raw, suffix = await bounded(dxf, {".dxf"})
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
                 f.write(raw); paths.append(f.name)
-            result = inspect_dxf(f.name)
+            try:
+                result = run_geometry_worker("dxf", f.name, timeout_seconds=45)
+            except GeometryWorkerError as exc:
+                result = {"findings": [issue(
+                    "SYS-001", "二维图纸解析未完成", "warning", "failed",
+                    "DXF", "PARSER", {"reason": str(exc)},
+                    "核实文件完整性，并使用原生CAD软件重新检查。")],
+                    "inspection_scope": {"file_parsing": "failed"}}
             result["filename"] = dxf.filename
             result["sha256"] = hashlib.sha256(raw).hexdigest()
             report["results"]["dxf"] = result
@@ -66,7 +74,16 @@ async def review(dxf: UploadFile | None = File(None),
             raw, suffix = await bounded(step, {".step", ".stp"})
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
                 f.write(raw); paths.append(f.name)
-            result = inspect_step(f.name)
+            try:
+                result = run_geometry_worker("step", f.name, timeout_seconds=60)
+            except GeometryWorkerError as exc:
+                result = {"findings": [issue(
+                    "SYS-002", "三维模型解析或计算未完成", "warning", "failed",
+                    "STEP", "PARSER", {"reason": str(exc)},
+                    "复核原始模型、拓扑状态和计算限制后重新执行检查。")],
+                    "pair_counts": {"calculated": 0, "failed": 1,
+                                    "not_supported": 0, "bbox_excluded": 0},
+                    "part_count": 0, "candidate_pairs": 0}
             result["sha256"] = hashlib.sha256(raw).hexdigest()
             report["results"]["step"] = result
             report["findings"].extend(result["findings"])
