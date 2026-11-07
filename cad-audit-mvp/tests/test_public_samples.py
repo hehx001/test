@@ -214,3 +214,39 @@ def test_nist_historical_step_files(public_data):
         result = inspect_step(str(path))
         assert result["part_count"] >= 1, f"NIST model has no readable solids: {key}"
         print("NIST_STEP " + json.dumps(result_record(key, path, result), ensure_ascii=False))
+
+
+@pytest.mark.parametrize("overlap_expected", [True, False], ids=["known-overlap", "known-separation"])
+def test_nist_bracket_controlled_assembly(public_data, tmp_path, overlap_expected):
+    """Create an intentional collision from an authentic NIST mechanical solid.
+
+    A second copy is placed at exactly the same location (positive example)
+    or sufficiently far away (negative example). This does not imply the
+    original NIST model contained a manufacturing design error.
+    """
+    import cadquery as cq
+    solid = cq.importers.importStep(str(public_data["nist_bracket_step"])).val()
+    assert solid.Volume() > 0, "NIST bracket did not import as a solid"
+    bbox = solid.BoundingBox()
+    offset = 0 if overlap_expected else bbox.xlen + bbox.ylen + bbox.zlen + 100
+    assembly = cq.Assembly(name="controlled")
+    assembly.add(solid, name="reference")
+    assembly.add(solid, name="second", loc=cq.Location(cq.Vector(offset, 0, 0)))
+    output = tmp_path / ("nist_overlap.step" if overlap_expected else "nist_separated.step")
+    assembly.save(str(output))
+    results = inspect_step(str(output))
+    overlaps = [x for x in results["findings"] if x["rule"] == "STEP-001"]
+    assert results["part_count"] == 2
+    if overlap_expected:
+        assert overlaps, "failed to detect known overlap in authentic NIST geometry"
+        assert overlaps[0]["evidence"]["overlap_volume_model_units_cubed"] > 0
+    else:
+        assert not overlaps, "false interference warning for separated NIST solids"
+    print("NIST_CONTROLLED " + json.dumps({
+        "source": "nist_bracket_step",
+        "case": "known_overlap" if overlap_expected else "known_separation",
+        "part_count": results["part_count"],
+        "candidate_pairs": results["candidate_pairs"],
+        "interference_count": len(overlaps),
+        "overlap_volumes": [x["evidence"]["overlap_volume_model_units_cubed"] for x in overlaps],
+    }, ensure_ascii=False))
