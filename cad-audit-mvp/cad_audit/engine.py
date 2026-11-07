@@ -143,7 +143,8 @@ def inspect_dxf(path: str):
                               {"examples": attrs["title_scan_warnings"][:10],
                                "count": len(attrs["title_scan_warnings"])},
                               "在原生CAD中核实图签实例和所依赖的图块。"))
-    for key, values in attrs.items():
+    for key in ("part", "material", "revision"):
+        values = attrs.get(key, [])
         if len(values) > 1:
             findings.append(issue("DOC-001", "图框属性存在多个不同取值", "warning", "needs_review", "TITLE", key,
                                   {"field": key, "values": values}, "核对是否包含多个图框或多个版本。"))
