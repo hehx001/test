@@ -284,9 +284,8 @@ def inspect_step(path: str, max_parts: int = 80, max_pairs: int = 2000):
         from OCP.Bnd import Bnd_Box
         from OCP.BRepBndLib import BRepBndLib
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
-        from OCP.GProp import GProp_GProps
-        from OCP.BRepGProp import BRepGProp
         from OCP.TopLoc import TopLoc_Location
+        from .step_safety import solids_and_validity, intersection_volume
     except ImportError as exc:
         raise ValueError("未安装cadquery-ocp，无法检查STEP") from exc
     rdr = STEPCAFControl_Reader()
@@ -327,32 +326,82 @@ def inspect_step(path: str, max_parts: int = 80, max_pairs: int = 2000):
             shape = shape.Moved(location)
             box = Bnd_Box()
             BRepBndLib.Add_s(shape, box)
-            parts.append({"name": name(label), "path": trail, "shape": shape, "bbox": box})
+            solids, shape_status = solids_and_validity(shape)
+            parts.append({"name": name(label), "path": trail, "shape": shape,
+                          "bbox": box, "geometry": shape_status})
 
     for i in range(1, free.Length() + 1):
         visit(free.Value(i), name(free.Value(i)), 0, TopLoc_Location())
     if len(parts) > max_parts:
         raise ValueError("STEP零件数超出安全限制")
     findings, checked = [], 0
+    success, failed, unsupported = 0, 0, 0
+    pair_results = []
+    total_pairs = len(parts) * (len(parts) - 1) // 2
+    for index, part in enumerate(parts):
+        if not part["geometry"]["usable"]:
+            findings.append(issue("STEP-002", "该对象不是已验证的封闭实体，体积干涉检查不适用",
+                                  "info", "not_supported", "STEP", str(index),
+                                  {"part": part["path"], "geometry": part["geometry"]},
+                                  "应提供有效封闭实体或选择适用于曲面模型的检查任务。"))
+
     for i in range(len(parts)):
         for j in range(i + 1, len(parts)):
             a, b = parts[i], parts[j]
             if a["bbox"].IsOut(b["bbox"]):
                 continue
             checked += 1
+            pair_id = f"{i}:{j}"
+            evidence = {"part_a": a["path"], "part_b": b["path"]}
+            status = "success"
             if checked > max_pairs:
-                raise ValueError("STEP潜在相交零件对超出安全限制")
-            common = BRepAlgoAPI_Common(a["shape"], b["shape"])
-            common.Build()
-            if not common.IsDone():
-                continue
-            mass = GProp_GProps()
-            BRepGProp.VolumeProperties_s(common.Shape(), mass)
-            overlap = float(mass.Mass())
-            if overlap > 1e-6:
-                findings.append(issue("STEP-001", "装配零件存在实体交集", "warning", "needs_review", "STEP",
-                                      f"{i}:{j}", {"part_a": a["path"], "part_b": b["path"],
-                                                    "overlap_volume_model_units_cubed": round(overlap, 6)},
-                                      "核对配合类型、预期过盈及设计模型简化情况。"))
-    return {"part_count": len(parts), "candidate_pairs": checked, "total_pairs": len(parts)*(len(parts)-1)//2,
-            "parts": [{"name": p["name"], "path": p["path"]} for p in parts], "findings": findings}
+                status, detail = "not_supported", "candidate_pair_limit"
+            elif not a["geometry"]["usable"] or not b["geometry"]["usable"]:
+                status, detail = "not_supported", "non_solid_or_invalid_component"
+            else:
+                try:
+                    common = BRepAlgoAPI_Common(a["shape"], b["shape"])
+                    common.Build()
+                    if not common.IsDone():
+                        status, detail = "failed", "boolean_algorithm_not_done"
+                    else:
+                        overlap, detail = intersection_volume(common.Shape())
+                except Exception as exc:
+                    status, detail = "failed", type(exc).__name__
+            if status == "success":
+                success += 1
+                if overlap > 1e-6:
+                    findings.append(issue("STEP-001", "装配零件存在已计算的实体交集",
+                                          "warning", "needs_review", "STEP", pair_id,
+                                          {**evidence,
+                                           "overlap_volume_model_units_cubed": round(overlap, 6),
+                                           "length_unit": "not_verified",
+                                           "algorithm_zero_volume_threshold": 1e-6},
+                                          "核对配合类型、预期过盈及设计模型简化情况。"))
+            else:
+                if status == "failed":
+                    failed += 1
+                    rule = "STEP-003"
+                    title = "实体布尔运算失败，不能据此判定无干涉"
+                else:
+                    unsupported += 1
+                    rule = "STEP-004"
+                    title = "该零件配对的体积检查未执行"
+                findings.append(issue(rule, title, "warning", status, "STEP", pair_id,
+                                      {**evidence, "reason": detail},
+                                      "确认零件几何条件或补充其他检查方法后重新审核。"))
+            pair_results.append({**evidence, "id": pair_id,
+                                 "status": status, "detail": detail})
+    excluded = total_pairs - checked
+    assert success + failed + unsupported == checked
+    return {
+        "part_count": len(parts), "candidate_pairs": checked, "total_pairs": total_pairs,
+        "pair_counts": {"calculated": success, "failed": failed,
+                        "not_supported": unsupported, "bbox_excluded": excluded},
+        "pair_results": pair_results,
+        "length_unit": "not_verified",
+        "algorithm_zero_volume_threshold": 1e-6,
+        "parts": [{"name": p["name"], "path": p["path"],
+                   "geometry": p["geometry"]} for p in parts],
+        "findings": findings,
+    }
