@@ -1,7 +1,7 @@
 # 机械CAD图纸审核项目：专家评审整改及复验记录
 
-**整改依据**：《机械CAD审核项目评审》（2026-11-07），对应提交 \`2ef22979b892ef4e7cc9d2e65154616eba665c4f\`。  
-**开发分支**：\`feat/mechanical-cad-audit-mvp\`；[PR #1](https://github.com/hehx001/test/pull/1)。  
+**整改依据**：《机械CAD审核项目评审》（2026-11-07），对应提交 `2ef22979b892ef4e7cc9d2e65154616eba665c4f`。  
+**开发分支**：`feat/mechanical-cad-audit-mvp`；[PR #1](https://github.com/hehx001/test/pull/1)。  
 **工作性质**：工程规则可靠性整改，保留原有DXF／BOM／STEP能力，不将程序规则的通过视作整机设计批准。
 
 ## 一、五项P1修订结果
@@ -31,12 +31,15 @@
 
 ## 三、验证资料和回归机制
 
-- 项目既有基础检查、模型接口模拟测试、服务端密钥配置测试均保留。
-- 新增\`tests/test_review_regressions.py\`，覆盖P1与P2问题的受控反例；150000顶点的完整DXF压力测试已在此前GitHub Actions实际执行通过，日常测试使用25000顶点样本，完整测试可设置\`CAD_STRESS_TEST=1\`单独执行。
-- 新增\`tests/test_preview.js\`，采用Node/V8执行网页中的实际绘图函数，直接验证150000顶点数据不会触发此前的数组参数限制问题。
-- 11份公开CAD文件的固定版本、文件校验方法及实测记录仍保存在\`tests/test_public_samples.py\`及第三轮NIST报告中。
+**最新自动测试**：[GitHub Actions Run 42381706366](https://github.com/hehx001/test/actions/runs/42381706366)，基础规则5项、模型接口11项、本地配置4项、评审复现20项及公开CAD样本7项，合计**47项通过**；1项15万顶点DXF完整压力测试按设置留待专门执行。另有一项Node/V8绘图测试处理15万顶点成功。该结果证明具体测试案例获得预期结果，不代表真实设计错误识别率。
 
-复验指令（在\`cad-audit-mvp\`目录）：
+
+- 项目既有基础检查、模型接口模拟测试、服务端密钥配置测试均保留。
+- 新增`tests/test_review_regressions.py`，覆盖P1与P2问题的受控反例；150000顶点的完整DXF压力测试已在此前GitHub Actions实际执行通过，日常测试使用25000顶点样本，完整测试可设置`CAD_STRESS_TEST=1`单独执行。
+- 新增`tests/test_preview.js`，采用Node/V8执行网页中的实际绘图函数，直接验证150000顶点数据不会触发此前的数组参数限制问题。
+- 11份公开CAD文件的固定版本、文件校验方法及实测记录仍保存在`tests/test_public_samples.py`及第三轮NIST报告中。
+
+复验指令（在`cad-audit-mvp`目录）：
 
 ~~~bash
 python -m pip install -e . pytest cadquery httpx==0.28.1
