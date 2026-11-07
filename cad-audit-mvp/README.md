@@ -60,3 +60,22 @@ python examples/create_demo_files.py
 ```
 
 程序在`examples/`目录生成一组**故意包含异常的模拟设计文件**：人工指定的尺寸文字、零长度图元、与BOM不同的材料名称，以及两块静态相交的实体。将三个文件一起上传，即可查看检查结果。演示文件不用于实际生产设计。
+
+
+## 公开真实CAD文件的复验
+
+除项目内人工生成的测试文件外，\`tests/test_public_samples.py\` 会从三个公开仓库按固定提交版本下载真实DXF和STEP样本，核对Git blob散列值后执行解析与审查。**第三方文件不会随本仓库分发。**
+
+- haiha-ux/cad-sample-tests：机械安装板DXF（15条尺寸）、轴承座DXF（22条尺寸）。
+- CadQuery/cadquery：二维DXF文件与红色立方体/蓝色圆柱体STEP文件。
+- FreeCAD/FreeCAD：原生STEP测试装配文件。
+- 利用安装板原始图纸，另外进行一次受控尺寸文字修改，测试系统能否定位异常标注的原始实体句柄。
+
+联网复验：
+
+\`\`\`bash
+python -m pip install -e . pytest cadquery
+python -m pytest -s -q tests/test_public_samples.py
+\`\`\`
+
+GitHub Actions：\`.github/workflows/cad-public-samples.yml\`。测试记录会显示实际解析的图元数量、零件数量、疑似问题数及类别。**这些公开样本主要检验格式兼容、解析能力与异常提示，不能直接证明机械设计审图的高召回率或高精确率。**本项目还缺少经工程专家确认的真实错图和规范的独立验证。
