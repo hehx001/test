@@ -77,7 +77,7 @@ def inspect_dxf(path: str):
                  "numeric_conflicts": 0, "custom_unverified": 0}
     custom_samples = []
     all_types = {}
-    blocks = {"references": 0, "virtual_entities": 0,
+    blocks = {"references": 0, "virtual_entities": 0, "empty_references": 0,
               "unexpanded_references": 0, "examples": []}
 
     def visible_entities(layout):
@@ -105,9 +105,17 @@ def inspect_dxf(path: str):
                     blocks["virtual_entities"] += 1
                     yield from visit(child, path + "/" + str(index), depth + 1)
                 if not children_seen:
-                    blocks["unexpanded_references"] += 1
-                    if len(blocks["examples"]) < 8:
-                        blocks["examples"].append({"entity": path, "reason": "empty block reference"})
+                    # Some archived DXF drawings intentionally reference
+                    # empty blocks. These are valid and need no geometry.
+                    block_name = str(ent.dxf.get("name", ""))
+                    definition = doc.blocks.get(block_name)
+                    if definition is not None and not any(True for _ in definition):
+                        blocks["empty_references"] += 1
+                    else:
+                        blocks["unexpanded_references"] += 1
+                        if len(blocks["examples"]) < 8:
+                            blocks["examples"].append({"entity": path,
+                                                       "reason": "missing or unsupported block"})
             except Exception as exc:
                 blocks["unexpanded_references"] += 1
                 if len(blocks["examples"]) < 8:
