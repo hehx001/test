@@ -322,12 +322,25 @@ def inspect_bom(raw: bytes, drawing_attrs: dict):
                                       {"part_no": part, "drawing": drawing_rev,
                                        "bom": bom_rev, "bom_row": row_no},
                                       "核实已批准的正式设计版本。"))
+    missing_columns = [name for name in ("material", "revision") if name not in colmap]
+    if records and missing_columns:
+        findings.append(issue("XREF-007", "BOM缺少关键字段，跨文件核查范围不完整",
+                              "info", "not_supported", "DRAWING+BOM", "BOM_COLUMNS",
+                              {"missing_columns": missing_columns},
+                              "补充项目要求核查的材料和版本字段。"))
+    checked = bool(records) and all(
+        part_key(rec.get("part")) and part_key(rec.get("part")) in parts and
+        all(str(rec.get(field, "")).strip() and
+            str(parts[part_key(rec["part"])][1].get(colmap[field]) or "").strip()
+            for field in ("material", "revision") if field in colmap)
+        for rec in records
+    )
     return {"row_count": len(rows), "columns": list(colmap.keys()),
             "title_instances_checked": len(records),
-            "crossfile_check_complete": bool(records) and all(
-                part_key(rec.get("part")) and part_key(rec.get("part")) in parts
-                for rec in records
-            ), "findings": findings}
+            "crossfile_check_complete": bool(checked and not missing_columns
+                                            and not drawing_attrs.get("title_scan_warnings")),
+            "missing_columns": missing_columns,
+            "findings": findings}
 
 
 def inspect_step(path: str, max_parts: int = 80, max_pairs: int = 2000):
