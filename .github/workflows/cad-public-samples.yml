@@ -33,6 +33,9 @@ jobs:
       - name: Verify independent review regressions
         working-directory: cad-audit-mvp
         run: python -m pytest -q tests/test_review_regressions.py
+      - name: Verify dense browser preview safely
+        working-directory: cad-audit-mvp
+        run: node tests/test_preview.js
       - name: Run tests on independently authored DXF and STEP files
         if: always()
         working-directory: cad-audit-mvp
