@@ -82,6 +82,8 @@ def result_record(key, path, result):
         details["entity_counts"] = result["entity_counts"]
         details["declared_units"] = result["units"]
         details["dimension_text_stats"] = result["dimension_text_stats"]
+        details["all_entity_types"] = result["all_entity_types"]
+        details["unrendered_entity_types"] = result["unrendered_entity_types"]
     if "part_count" in result:
         details["part_count"] = result["part_count"]
         details["candidate_pairs"] = result["candidate_pairs"]
@@ -114,6 +116,15 @@ def test_authentic_technical_drawings(public_data):
         assert result["filename"] == path.name
         if key in expected_dimension_counts:
             assert result["entity_counts"]["DIMENSION"] == expected_dimension_counts[key]
+            assert result["dimension_text_stats"]["numeric_conflicts"] == 0
+        if key == "mounting_plate":
+            assert not any(x["rule"] == "DXF-001" for x in result["findings"])
+        if key == "step_bearing":
+            assert result["dimension_text_stats"]["numeric_matches"] >= 21
+            assert result["dimension_text_stats"]["custom_unverified"] <= 1
+        if key == "cadquery_dxf":
+            assert result["all_entity_types"].get("SPLINE") == 12
+            assert result["unrendered_entity_types"].get("SPLINE") == 12
         print("REAL_DXF " + json.dumps(result_record(key, path, result), ensure_ascii=False))
 
 

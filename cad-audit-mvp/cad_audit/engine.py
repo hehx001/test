@@ -76,9 +76,11 @@ def inspect_dxf(path: str):
     dim_stats = {"default_or_placeholder": 0, "numeric_matches": 0,
                  "numeric_conflicts": 0, "custom_unverified": 0}
     custom_samples = []
+    all_types = {}
     for layout in doc.layouts:
         for ent in layout:
             kind = ent.dxftype()
+            all_types[kind] = all_types.get(kind, 0) + 1
             handle = ent.dxf.get("handle", "")
             if kind in counts:
                 counts[kind] += 1
@@ -152,6 +154,9 @@ def inspect_dxf(path: str):
                                   {"field": key, "values": values}, "核对是否包含多个图框或多个版本。"))
     return {"filename": Path(path).name, "attributes": attrs, "units": units,
             "entity_counts": counts, "dimension_text_stats": dim_stats,
+            "all_entity_types": all_types,
+            "unrendered_entity_types": {k: v for k, v in all_types.items()
+                                        if k not in {"LINE", "CIRCLE", "LWPOLYLINE"}},
             "preview": drawing, "findings": findings}
 
 
