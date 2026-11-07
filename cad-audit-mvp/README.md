@@ -11,6 +11,42 @@
 
 **判定边界**：人工覆盖尺寸、未声明单位和STEP实体重叠均为待核查事项，不等于设计错误。当前不支持DWG、GD&T语义分析、完整尺寸链、实体间运动干涉或自动判定配合合理性。没有可靠单位时，不换算到mm。DXF图形预览是简化图，不完整呈现块、圆弧、字体和尺寸渲染；曲线多段线会显示为折线，不能据此判断实际几何。
 
+## Qwen与DeepSeek双模型接口（本地自主选择）
+
+规则引擎可完全离线使用。网页默认选择 **不调用模型**。只有明确选择Qwen或DeepSeek，才会向对应官方接口传送本次工程规则发现事项的摘要与相关证据；**不会传送DWG/DXF/STEP原文件及网页预览图**。目前模型负责解释已发现的规则疑点，尚未具有独立视觉读图、工具自动执行或复杂设计安全结论功能。
+
+两套服务端配置独立：
+
+| 服务商 | 密钥环境变量 | 模型环境变量 | API地址环境变量 | 默认模型 |
+|---|---|---|---|---|
+| Qwen（阿里云百炼） | QWEN_API_KEY | QWEN_MODEL | QWEN_BASE_URL | qwen-plus |
+| DeepSeek | DEEPSEEK_API_KEY | DEEPSEEK_MODEL | DEEPSEEK_BASE_URL | deepseek-flash |
+
+例如在Mac终端为当前会话设置（请使用自己实际的API Key）：
+
+```bash
+export QWEN_API_KEY='your-qwen-api-key'
+export DEEPSEEK_API_KEY='your-deepseek-api-key'
+export QWEN_MODEL='qwen-plus'
+export DEEPSEEK_MODEL='deepseek-flash'
+
+uvicorn cad_audit.api:app --host 127.0.0.1 --port 8000
+```
+
+Qwen默认地址为阿里云百炼北京地域的兼容接口；如果API Key属于其他地域或业务空间，请依据阿里云控制台填写其官方 `QWEN_BASE_URL`，并确保地址以 `/compatible-mode/v1` 结尾。DeepSeek默认地址是 `https://api.deepseek.com`。接口地址允许的域名范围受服务端校验限制，不能通过网页填写任意URL。
+
+可通过 `GET /api/model-providers` 查看两家是否已配置（绝不返回密钥），通过 `POST /api/review` 表单的 `provider=off|qwen|deepseek` 选择。本地规则检查结果总是保留在返回的 `results`、`findings` 中。模型分析位于 `ai_review` 字段；当密钥缺失、无待解释的疑点或者模型失败时，分别报告对应状态。
+
+测试（不需要真实API Key，也不会产生云端调用费用）：
+
+```bash
+python -m pip install -e . pytest
+python -m pytest -q tests/test_models.py
+```
+
+**目前没有获得用户密钥，尚未运行两家真实付费API请求。** 双接口的请求构造、服务商切换、规则证据筛选、异常处理和密钥不泄漏行为采用模拟HTTPS响应测试。生产使用前需要在实际开通的服务地域，用真实API Key进行一次端到端验证。
+
+
 ## 快速启动
 
 建议Python 3.11—3.13，安装所需依赖（首次安装Open CASCADE包可能较大）：
